@@ -3,13 +3,11 @@
 ## Goal
 Detect when a 4-6mm ball enters a button soccer goal (15cm x 4cm) using the DFR1154 ESP32-S3 AI Camera, and play a goal celebration sound.
 
-## Phase 1: Hello World — Camera Stream
-**Objective:** Verify the board works, camera streams, and dev environment is set up.
-- [ ] Set up Arduino IDE with ESP32-S3 board package
-- [ ] Flash the CameraWebServer example (5.3 from DFR1154_Examples)
-- [ ] Verify video stream in browser
-- [ ] Test different resolutions (QVGA 320x240, QQVGA 160x120)
-- [ ] Confirm frame rate at each resolution
+## Phase 1: Hello World — Camera Stream ✅
+**Status:** COMPLETE — PlatformIO project scaffolded, MJPEG stream at http://192.168.40.55
+- [x] Set up PlatformIO with ESP32-S3 board (esp32-s3-devkitc-1)
+- [x] Flash camera streaming firmware
+- [x] Verified video stream in browser at QVGA (320x240)
 
 ## Phase 2: Audio Test
 **Objective:** Verify speaker plays audio.
@@ -18,15 +16,16 @@ Detect when a 4-6mm ball enters a button soccer goal (15cm x 4cm) using the DFR1
 - [ ] Prepare a "GOOOL!" sound file (WAV, 16-bit, 16kHz mono)
 - [ ] Copy sound file to MicroSD card
 
-## Phase 3: Ball Detection — Frame Differencing
-**Objective:** Detect motion (ball entering) in a defined goal region.
-- [ ] Capture frames in RGB565 or GRAYSCALE at QVGA
-- [ ] Define a Region of Interest (ROI) covering the goal opening
-- [ ] Implement frame differencing: compare current vs previous frame in ROI
-- [ ] Calculate pixel change percentage in ROI
-- [ ] When change exceeds threshold → trigger goal event
-- [ ] Tune threshold to avoid false positives (player hand, shadows)
-- [ ] Add cooldown period after goal detection (prevent double-counting)
+## Phase 3: Ball Detection — Frame Differencing ✅
+**Status:** COMPLETE — Pixel-level grayscale detection working at 12fps
+- [x] Capture frames in native PIXFORMAT_GRAYSCALE at QVGA
+- [x] Define ROI (center 80% of frame)
+- [x] Pixel-level frame differencing with per-pixel threshold
+- [x] frame2jpg() conversion for web streaming from grayscale
+- [x] Goal detection with 3s cooldown, stable-frame requirement
+- [x] Web dashboard with live stream, score counter, GOOOL! flash
+- [x] Confirmed detection via LED self-test (5-23% change on motion)
+- [ ] Tune threshold with real ball at actual goal (PIXEL_THRESHOLD=15, CHANGE_THRESHOLD=3%)
 
 ## Phase 4: Goal Celebration
 **Objective:** When goal detected, celebrate!
@@ -78,6 +77,7 @@ Detect when a 4-6mm ball enters a button soccer goal (15cm x 4cm) using the DFR1
 | Resolution | QVGA (320x240) | Balance of detail vs speed |
 | Pixel format | GRAYSCALE | Simpler math, faster processing |
 | ROI | Center 60% of frame | Adjust to actual goal position |
-| Change threshold | 15% of ROI pixels | Tune with real ball |
+| Pixel threshold | 15 brightness units | Per-pixel change to count as "changed" |
+| Change threshold | 3% of ROI pixels | Tune with real ball |
 | Cooldown | 3 seconds | Prevent double-counting |
 | Frame compare interval | Every frame | May skip frames if too slow |
