@@ -1,11 +1,12 @@
 // =============================================================
-// Minimal MJPEG streaming server for camera verification
+// MJPEG streaming server — works with grayscale camera frames
 // =============================================================
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include "esp_http_server.h"
 #include "esp_camera.h"
+#include "img_converters.h"
 #include "pins.h"
 #include "goal_detector.h"
 
@@ -18,7 +19,6 @@ static const char* STREAM_BOUNDARY = "\r\n--" PART_BOUNDARY "\r\n";
 static const char* STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n";
 
 static esp_err_t stream_handler(httpd_req_t *req) {
-    camera_fb_t *fb = NULL;
     esp_err_t res = ESP_OK;
     char part_buf[64];
 
@@ -26,22 +26,37 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     if (res != ESP_OK) return res;
 
     while (true) {
-        fb = esp_camera_fb_get();
+        camera_fb_t *fb = esp_camera_fb_get();
         if (!fb) {
-            Serial.println("Camera capture failed");
+            Serial.println("Stream: capture failed");
             res = ESP_FAIL;
             break;
         }
 
-        size_t hlen = snprintf(part_buf, 64, STREAM_PART, fb->len);
-        res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
-        if (res == ESP_OK)
-            res = httpd_resp_send_chunk(req, part_buf, hlen);
-        if (res == ESP_OK)
-            res = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
+        // If frame is already JPEG, send directly
+        if (fb->format == PIXFORMAT_JPEG) {
+            size_t hlen = snprintf(part_buf, 64, STREAM_PART, fb->len);
+            res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
+            if (res == ESP_OK) res = httpd_resp_send_chunk(req, part_buf, hlen);
+            if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
+        } else {
+            // Convert grayscale to JPEG
+            uint8_t *jpg_buf = NULL;
+            size_t jpg_len = 0;
+            bool ok = frame2jpg(fb, 80, &jpg_buf, &jpg_len);
+            if (ok && jpg_buf) {
+                size_t hlen = snprintf(part_buf, 64, STREAM_PART, jpg_len);
+                res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
+                if (res == ESP_OK) res = httpd_resp_send_chunk(req, part_buf, hlen);
+                if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)jpg_buf, jpg_len);
+                free(jpg_buf);
+            } else {
+                Serial.println("Stream: JPEG conversion failed");
+                res = ESP_FAIL;
+            }
+        }
 
         esp_camera_fb_return(fb);
-
         if (res != ESP_OK) break;
     }
     return res;
@@ -53,9 +68,26 @@ static esp_err_t capture_handler(httpd_req_t *req) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
-    httpd_resp_set_type(req, "image/jpeg");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    esp_err_t res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
+
+    esp_err_t res;
+    if (fb->format == PIXFORMAT_JPEG) {
+        httpd_resp_set_type(req, "image/jpeg");
+        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+        res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
+    } else {
+        uint8_t *jpg_buf = NULL;
+        size_t jpg_len = 0;
+        if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
+            httpd_resp_set_type(req, "image/jpeg");
+            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+            res = httpd_resp_send(req, (const char *)jpg_buf, jpg_len);
+            free(jpg_buf);
+        } else {
+            httpd_resp_send_500(req);
+            res = ESP_FAIL;
+        }
+    }
+
     esp_camera_fb_return(fb);
     return res;
 }
@@ -127,9 +159,9 @@ void startCameraServer() {
         httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler };
         httpd_uri_t stream_uri = { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler };
         httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_handler };
+        httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = status_handler };
         httpd_register_uri_handler(server, &index_uri);
         httpd_register_uri_handler(server, &stream_uri);
-        httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = status_handler };
         httpd_register_uri_handler(server, &capture_uri);
         httpd_register_uri_handler(server, &status_uri);
         Serial.println("Camera web server started");
