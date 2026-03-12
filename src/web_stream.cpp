@@ -153,6 +153,8 @@ void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
+    config.stack_size = 8192;       // larger stack for frame2jpg
+    config.max_open_sockets = 4;    // index + stream + status + spare
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {

@@ -24,10 +24,10 @@ volatile bool goalJustScored = false;
 // Detection parameters
 #define DETECT_W 320
 #define DETECT_H 240
-#define PIXEL_THRESHOLD 15      // per-pixel brightness change
-#define CHANGE_THRESHOLD 0.03f  // 3% of ROI pixels must change
+#define PIXEL_THRESHOLD 25      // per-pixel brightness change
+#define CHANGE_THRESHOLD 0.08f  // 8% of ROI pixels must change
 #define COOLDOWN_MS 3000
-#define STABLE_FRAMES_NEEDED 3
+#define STABLE_FRAMES_NEEDED 5  // require more stability before triggering
 
 void setup() {
     Serial.begin(115200);
