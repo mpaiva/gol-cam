@@ -7,6 +7,10 @@
 #include "esp_http_server.h"
 #include "esp_camera.h"
 #include "pins.h"
+#include "goal_detector.h"
+
+extern GoalDetector detector;
+extern volatile bool goalJustScored;
 
 #define PART_BOUNDARY "123456789000000000000987654321"
 static const char* STREAM_CONTENT_TYPE = "multipart/x-mixed-replace;boundary=" PART_BOUNDARY;
@@ -56,18 +60,59 @@ static esp_err_t capture_handler(httpd_req_t *req) {
     return res;
 }
 
+static esp_err_t status_handler(httpd_req_t *req) {
+    char buf[256];
+    bool scored = goalJustScored;
+    if (scored) goalJustScored = false;
+    snprintf(buf, sizeof(buf),
+        "{\"goals\":%d,\"fps\":%d,\"change\":%.2f,\"frames\":%d,\"scored\":%s}",
+        detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
+        detector.frameCount, scored ? "true" : "false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, buf, strlen(buf));
+}
+
 static esp_err_t index_handler(httpd_req_t *req) {
     const char* html =
         "<!DOCTYPE html><html><head>"
         "<title>gol-cam</title>"
-        "<style>body{background:#000;color:#fff;font-family:sans-serif;"
-        "display:flex;flex-direction:column;align-items:center;margin:20px}"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<style>"
+        "body{background:#111;color:#fff;font-family:sans-serif;"
+        "display:flex;flex-direction:column;align-items:center;margin:0;padding:20px}"
         "img{max-width:100%;border:2px solid #333;border-radius:8px}"
-        "h1{margin-bottom:10px}</style></head><body>"
+        "h1{margin:10px 0 5px;font-size:2em}"
+        "#score{font-size:4em;font-weight:bold;margin:10px 0;transition:all 0.3s}"
+        "#goal-flash{position:fixed;top:0;left:0;width:100%;height:100%;"
+        "background:rgba(0,255,0,0.3);pointer-events:none;opacity:0;transition:opacity 0.5s}"
+        "#goal-text{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);"
+        "font-size:6em;font-weight:bold;color:#0f0;opacity:0;transition:opacity 0.5s;"
+        "pointer-events:none;text-shadow:0 0 30px #0f0}"
+        "#stats{color:#666;font-size:0.8em;margin:5px}"
+        ".active{opacity:1 !important}"
+        "</style></head><body>"
+        "<div id='goal-flash'></div>"
+        "<div id='goal-text'>GOOOL!</div>"
         "<h1>gol-cam</h1>"
-        "<p>Button Soccer Goal Detection Camera</p>"
-        "<img src=\"/stream\" />"
-        "</body></html>";
+        "<div id='score'>0</div>"
+        "<img src='/stream'/>"
+        "<div id='stats'>connecting...</div>"
+        "<script>"
+        "const score=document.getElementById('score');"
+        "const flash=document.getElementById('goal-flash');"
+        "const goalTxt=document.getElementById('goal-text');"
+        "const stats=document.getElementById('stats');"
+        "setInterval(async()=>{"
+        "try{const r=await fetch('/status');const d=await r.json();"
+        "score.textContent=d.goals;"
+        "stats.textContent='fps:'+d.fps+' change:'+d.change.toFixed(1)+'%';"
+        "if(d.scored){"
+        "flash.classList.add('active');goalTxt.classList.add('active');"
+        "setTimeout(()=>{flash.classList.remove('active');"
+        "goalTxt.classList.remove('active')},2000);"
+        "}}catch(e){stats.textContent='disconnected';}},500);"
+        "</script></body></html>";
     httpd_resp_set_type(req, "text/html");
     return httpd_resp_send(req, html, strlen(html));
 }
@@ -84,7 +129,9 @@ void startCameraServer() {
         httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_handler };
         httpd_register_uri_handler(server, &index_uri);
         httpd_register_uri_handler(server, &stream_uri);
+        httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = status_handler };
         httpd_register_uri_handler(server, &capture_uri);
+        httpd_register_uri_handler(server, &status_uri);
         Serial.println("Camera web server started");
     }
 }
