@@ -44,7 +44,6 @@ bool initCamera(framesize_t frameSize = FRAMESIZE_QVGA,
     if (s->id.PID == OV3660_PID) {
         s->set_vflip(s, 1);
         s->set_brightness(s, 1);
-        s->set_saturation(s, -2);
     }
 
     Serial.println("Camera initialized OK");

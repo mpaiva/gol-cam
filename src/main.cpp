@@ -1,6 +1,6 @@
 // =============================================================
 // gol-cam — Button Soccer Goal Detection Camera
-// Phase 3: Pixel-level frame differencing (grayscale native)
+// Phase 3: Yellow dice (dadinho) detection via color filtering
 // =============================================================
 
 #include <Arduino.h>
@@ -27,10 +27,17 @@ volatile bool goalJustScored = false;
 // Detection parameters
 #define DETECT_W 320
 #define DETECT_H 240
-#define PIXEL_THRESHOLD 25      // per-pixel brightness change
-#define CHANGE_THRESHOLD 0.08f  // 8% of ROI pixels must change
+
+// Yellow color thresholds in RGB565
+// RGB565: RRRRRGGG GGGBBBBB (R=5bit, G=6bit, B=5bit)
+#define YELLOW_R_MIN 18   // out of 31 — high red
+#define YELLOW_G_MIN 30   // out of 63 — high green
+#define YELLOW_B_MAX 14   // out of 31 — low blue
+
+// How many yellow pixels to trigger a goal
+#define YELLOW_PIXEL_MIN 15       // minimum yellow pixels to count as "dice present"
 #define COOLDOWN_MS 3000
-#define STABLE_FRAMES_NEEDED 5
+#define STABLE_FRAMES_NEEDED 3    // frames without dice before re-arming
 
 void setup() {
     Serial.begin(115200);
@@ -47,10 +54,19 @@ void setup() {
         while (true) delay(1000);
     }
 
-    // Init camera in GRAYSCALE for detection
-    if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_GRAYSCALE)) {
+    // Init camera in RGB565 for color detection
+    if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_RGB565)) {
         Serial.println("FATAL: Camera init failed!");
         while (true) delay(1000);
+    }
+
+    // Boost saturation for better yellow detection
+    sensor_t *s = esp_camera_sensor_get();
+    if (s) {
+        s->set_saturation(s, 2);   // max saturation for vivid yellows
+        s->set_brightness(s, 0);
+        s->set_whitebal(s, 1);     // auto white balance
+        s->set_awb_gain(s, 1);
     }
 
     // Connect to WiFi
@@ -74,34 +90,21 @@ void setup() {
     Serial.printf("Camera stream: http://%s\n", WiFi.localIP().toString().c_str());
 
     // Configure detector
-    detector.changeThreshold = CHANGE_THRESHOLD;
     detector.cooldownMs = COOLDOWN_MS;
 
-    Serial.printf("Detection: pixThresh=%d, changeThresh=%.1f%%, cooldown=%dms\n",
-        PIXEL_THRESHOLD, CHANGE_THRESHOLD * 100, COOLDOWN_MS);
-    Serial.println("=== gol-cam ready — watching for goals! ===");
+    Serial.printf("Detection: yellow R>=%d G>=%d B<=%d, minPx=%d, cooldown=%dms\n",
+        YELLOW_R_MIN, YELLOW_G_MIN, YELLOW_B_MAX, YELLOW_PIXEL_MIN, COOLDOWN_MS);
+    Serial.println("=== gol-cam ready — watching for dadinho! ===");
 }
 
 void loop() {
-    static uint8_t* prevFrame = nullptr;
-    static bool hasPrev = false;
-    static uint32_t stableFrames = 0;
+    static bool diceWasPresent = false;
+    static uint32_t noDiceFrames = 0;
     static uint32_t lastGoalTime = 0;
     static uint32_t frameNum = 0;
     static uint32_t fpsCount = 0;
     static uint32_t lastFpsTime = millis();
     static uint32_t lastPrint = 0;
-
-    // Allocate prev frame buffer once
-    if (!prevFrame) {
-        prevFrame = (uint8_t*)ps_malloc(DETECT_W * DETECT_H);
-        if (!prevFrame) {
-            Serial.println("FATAL: Failed to allocate prev frame");
-            delay(5000);
-            return;
-        }
-        memset(prevFrame, 0, DETECT_W * DETECT_H);
-    }
 
     // Grab a frame — ONLY the main loop calls esp_camera_fb_get()
     camera_fb_t* fb = esp_camera_fb_get();
@@ -120,14 +123,15 @@ void loop() {
         lastFpsTime = now;
     }
 
-    // Verify we got a grayscale frame
-    if (fb->format != PIXFORMAT_GRAYSCALE || fb->len < DETECT_W * DETECT_H) {
+    // Verify RGB565 frame
+    size_t expectedLen = DETECT_W * DETECT_H * 2;  // 2 bytes per pixel
+    if (fb->format != PIXFORMAT_RGB565 || fb->len < expectedLen) {
         esp_camera_fb_return(fb);
         delay(100);
         return;
     }
 
-    // Convert to JPEG and store for web stream
+    // Convert to JPEG for web stream
     uint8_t* jpg_buf = NULL;
     size_t jpg_len = 0;
     if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
@@ -135,73 +139,75 @@ void loop() {
         free(jpg_buf);
     }
 
-    if (!hasPrev) {
-        memcpy(prevFrame, fb->buf, DETECT_W * DETECT_H);
-        hasPrev = true;
-        esp_camera_fb_return(fb);
-        return;
-    }
-
-    // Frame differencing in ROI (center 80%)
+    // Scan for yellow pixels in ROI (center 80%)
+    uint16_t* pixels = (uint16_t*)fb->buf;
     int rx = DETECT_W / 10;
     int ry = DETECT_H / 10;
     int rw = DETECT_W * 8 / 10;
     int rh = DETECT_H * 8 / 10;
 
-    uint32_t changedPixels = 0;
-    uint32_t totalPixels = 0;
+    uint32_t yellowCount = 0;
 
     for (int y = ry; y < ry + rh; y++) {
         for (int x = rx; x < rx + rw; x++) {
-            int idx = y * DETECT_W + x;
-            int diff = abs((int)fb->buf[idx] - (int)prevFrame[idx]);
-            if (diff > PIXEL_THRESHOLD) {
-                changedPixels++;
+            // RGB565 is big-endian from camera, swap bytes
+            uint16_t raw = pixels[y * DETECT_W + x];
+            uint16_t px = (raw >> 8) | (raw << 8);  // byte swap
+
+            uint8_t r = (px >> 11) & 0x1F;  // 0-31
+            uint8_t g = (px >> 5) & 0x3F;   // 0-63
+            uint8_t b = px & 0x1F;           // 0-31
+
+            if (r >= YELLOW_R_MIN && g >= YELLOW_G_MIN && b <= YELLOW_B_MAX) {
+                yellowCount++;
             }
-            totalPixels++;
         }
     }
 
-    memcpy(prevFrame, fb->buf, DETECT_W * DETECT_H);
     esp_camera_fb_return(fb);
 
-    float changeRatio = (float)changedPixels / totalPixels;
-    detector.lastChangeRatio = changeRatio;
+    detector.lastChangeRatio = (float)yellowCount / (rw * rh);
     detector.frameCount = frameNum;
 
+    bool dicePresent = yellowCount >= YELLOW_PIXEL_MIN;
     bool inCooldown = (now - lastGoalTime) < COOLDOWN_MS;
 
-    // Log any significant motion
-    if (changeRatio > 0.02f) {
-        Serial.printf("[detect] change: %.1f%% (%d/%d px)%s\n",
-            changeRatio * 100, changedPixels, totalPixels,
+    // Log when yellow is detected
+    if (yellowCount > 0) {
+        Serial.printf("[yellow] %d px%s%s\n", yellowCount,
+            dicePresent ? " DICE!" : "",
             inCooldown ? " (cooldown)" : "");
     }
 
-    // Goal detection
-    if (changeRatio >= CHANGE_THRESHOLD && !inCooldown && stableFrames > STABLE_FRAMES_NEEDED) {
+    // Goal: dice appears after being absent
+    if (dicePresent && !diceWasPresent && !inCooldown && noDiceFrames > STABLE_FRAMES_NEEDED) {
         lastGoalTime = now;
         detector.goalCount++;
         goalJustScored = true;
-        stableFrames = 0;
 
         digitalWrite(LED_PIN, HIGH);
         delay(300);
         digitalWrite(LED_PIN, LOW);
 
-        Serial.printf("GOAL #%d! (change: %.1f%%)\n",
-            detector.goalCount, changeRatio * 100);
-    } else if (changeRatio < 0.02f) {
-        stableFrames++;
+        Serial.printf("GOAL #%d! (%d yellow px)\n",
+            detector.goalCount, yellowCount);
+    }
+
+    if (dicePresent) {
+        diceWasPresent = true;
+        noDiceFrames = 0;
     } else {
-        stableFrames = 0;
+        noDiceFrames++;
+        if (noDiceFrames > STABLE_FRAMES_NEEDED) {
+            diceWasPresent = false;
+        }
     }
 
     // Print stats every 5 seconds
     if (now - lastPrint >= 5000) {
-        Serial.printf("[stats] fps:%d frames:%d goals:%d change:%.1f%% stable:%d\n",
+        Serial.printf("[stats] fps:%d frames:%d goals:%d yellow:%d armed:%s\n",
             detector.fps, frameNum, detector.goalCount,
-            changeRatio * 100, stableFrames);
+            yellowCount, !diceWasPresent ? "yes" : "no");
         lastPrint = now;
     }
 
