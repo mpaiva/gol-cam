@@ -30,10 +30,11 @@ volatile bool goalJustScored = false;
 
 // Yellow color thresholds in RGB565
 // RGB565: RRRRRGGG GGGBBBBB (R=5bit, G=6bit, B=5bit)
-// Tuned to match bright yellow dadinho, reject skin tones
-#define YELLOW_R_MIN 24   // out of 31 (~197 in 8-bit) — very high red
-#define YELLOW_G_MIN 42   // out of 63 (~170 in 8-bit) — very high green
-#define YELLOW_B_MAX 10   // out of 31 (~82 in 8-bit) — low blue (skin has B>80)
+// Calibrated from actual dadinho capture: R~18, G~36, B~14
+// Skin tones have R≈G≈B (low saturation), dadinho has R>G>>B
+#define YELLOW_R_MIN 16   // out of 31
+#define YELLOW_G_MIN 28   // out of 63
+#define YELLOW_B_MAX 16   // out of 31
 
 // How many yellow pixels to trigger a goal
 #define YELLOW_PIXEL_MIN 15       // minimum yellow pixels to count as "dice present"
@@ -159,9 +160,11 @@ void loop() {
             uint8_t g = (px >> 5) & 0x3F;   // 0-63
             uint8_t b = px & 0x1F;           // 0-31
 
-            // Yellow: high R, high G, very low B, and R+G >> B
+            // Yellow: R and G high, B low, and R clearly greater than B
+            // Skin has R≈B, dadinho has R >> B
             if (r >= YELLOW_R_MIN && g >= YELLOW_G_MIN && b <= YELLOW_B_MAX
-                && (r + (g >> 1)) > (b * 4)) {  // saturation check
+                && r > (b + 4)           // R must be noticeably higher than B
+                && (g >> 1) > (b + 2)) { // G/2 must exceed B (yellow saturation)
                 yellowCount++;
             }
         }
@@ -175,11 +178,13 @@ void loop() {
     bool dicePresent = yellowCount >= YELLOW_PIXEL_MIN;
     bool inCooldown = (now - lastGoalTime) < COOLDOWN_MS;
 
-    // Log when yellow is detected
-    if (yellowCount > 0) {
+    // Log yellow detection (throttled to avoid spam)
+    static uint32_t lastYellowLog = 0;
+    if (yellowCount > 0 && (now - lastYellowLog >= 500)) {
         Serial.printf("[yellow] %d px%s%s\n", yellowCount,
             dicePresent ? " DICE!" : "",
             inCooldown ? " (cooldown)" : "");
+        lastYellowLog = now;
     }
 
     // Goal: dice appears after being absent
