@@ -117,9 +117,11 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "<div id='goal-text'>GOOOL!</div>"
         "<h1>gol-cam</h1>"
         "<div id='score'>0</div>"
-        "<img src='/stream'/>"
+        "<img id='cam'/>"
         "<div id='stats'>connecting...</div>"
         "<script>"
+        "document.getElementById('cam').src="
+        "'http://'+location.hostname+':81/stream';"
         "const score=document.getElementById('score');"
         "const flash=document.getElementById('goal-flash');"
         "const goalTxt=document.getElementById('goal-text');"
@@ -139,21 +141,32 @@ static esp_err_t index_handler(httpd_req_t *req) {
 }
 
 void startCameraServer() {
+    // Main server on port 80 — page, status, capture
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.stack_size = 8192;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {
         httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler };
-        httpd_uri_t stream_uri = { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler };
         httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_handler };
         httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = status_handler };
         httpd_register_uri_handler(server, &index_uri);
-        httpd_register_uri_handler(server, &stream_uri);
         httpd_register_uri_handler(server, &capture_uri);
         httpd_register_uri_handler(server, &status_uri);
-        Serial.println("Camera web server started");
+        Serial.println("Web server started on port 80");
+    }
+
+    // Stream server on port 81 — long-lived MJPEG connection
+    httpd_config_t stream_config = HTTPD_DEFAULT_CONFIG();
+    stream_config.server_port = 81;
+    stream_config.ctrl_port = 32769;
+    stream_config.stack_size = 8192;
+
+    httpd_handle_t stream_server = NULL;
+    if (httpd_start(&stream_server, &stream_config) == ESP_OK) {
+        httpd_uri_t stream_uri = { .uri = "/stream", .method = HTTP_GET, .handler = stream_handler };
+        httpd_register_uri_handler(stream_server, &stream_uri);
+        Serial.println("Stream server started on port 81");
     }
 }
