@@ -152,6 +152,16 @@ void setup() {
         s->set_awb_gain(s, 1);
     }
 
+    // Static IP configuration (optional — set in .env)
+#ifdef WIFI_STATIC_IP
+    IPAddress staticIP, gateway, subnet;
+    staticIP.fromString(WIFI_STATIC_IP);
+    gateway.fromString(WIFI_GATEWAY);
+    subnet.fromString(WIFI_SUBNET);
+    WiFi.config(staticIP, gateway, subnet);
+    Serial.printf("Static IP: %s\n", WIFI_STATIC_IP);
+#endif
+
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     Serial.printf("Connecting to WiFi: %s", WIFI_SSID);
     int retries = 0;
