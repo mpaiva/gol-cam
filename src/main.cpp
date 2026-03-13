@@ -1,6 +1,6 @@
 // =============================================================
 // gol-cam — Button Soccer Goal Detection Camera
-// Phase 3: Yellow dice (dadinho) detection via color + clustering
+// Calibration-based yellow dice (dadinho) detection
 // =============================================================
 
 #include <Arduino.h>
@@ -24,23 +24,42 @@ GoalDetector detector;
 FrameStore frameStore;
 volatile bool goalJustScored = false;
 
-// Detection parameters
 #define DETECT_W 320
 #define DETECT_H 240
 
-// Yellow color thresholds in RGB565 (loose — clustering filters the rest)
-#define YELLOW_R_MIN 16   // out of 31
-#define YELLOW_G_MIN 28   // out of 63
-#define YELLOW_B_MAX 16   // out of 31
+// Game states
+enum GameState { STATE_IDLE, STATE_CALIBRATING, STATE_PLAYING };
+volatile GameState gameState = STATE_IDLE;
 
-// Cluster checks: the dadinho is tiny, so yellow must be concentrated
-#define YELLOW_PIXEL_MIN 10        // minimum yellow pixels
-#define CLUSTER_MAX_SIZE 40        // bounding box can't exceed 40px in either dimension
-                                   // (dadinho is ~5mm ≈ 10-25px depending on distance)
-#define CLUSTER_DENSITY_MIN 0.15f  // at least 15% of bounding box must be yellow
+// Calibrated color (set during calibration)
+volatile int16_t calR = -1, calG = -1, calB = -1;  // -1 = not calibrated
+volatile int16_t calTolR = 5, calTolG = 10, calTolB = 5;  // tolerance per channel
+volatile int calPixelCount = 0;  // how many pixels the dice was during calibration
+volatile int calBboxW = 0, calBboxH = 0;
 
+// Detection params
 #define COOLDOWN_MS 3000
 #define STABLE_FRAMES_NEEDED 3
+
+// Called from HTTP handler to trigger calibration
+void requestCalibration() {
+    gameState = STATE_CALIBRATING;
+    Serial.println("[cal] Calibration requested");
+}
+
+void requestStart() {
+    if (calR >= 0) {
+        gameState = STATE_PLAYING;
+        detector.goalCount = 0;
+        goalJustScored = false;
+        Serial.println("[game] Game started!");
+    }
+}
+
+void requestStop() {
+    gameState = STATE_IDLE;
+    Serial.println("[game] Game stopped");
+}
 
 void setup() {
     Serial.begin(115200);
@@ -60,7 +79,6 @@ void setup() {
         while (true) delay(1000);
     }
 
-    // Boost saturation for better yellow detection
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
         s->set_saturation(s, 2);
@@ -85,10 +103,115 @@ void setup() {
     }
 
     startCameraServer();
-    Serial.printf("Camera stream: http://%s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("Dashboard: http://%s\n", WiFi.localIP().toString().c_str());
+    Serial.println("=== gol-cam ready ===");
+}
 
-    detector.cooldownMs = COOLDOWN_MS;
-    Serial.println("=== gol-cam ready — watching for dadinho! ===");
+// Find the brightest/most-distinct object in the frame for calibration
+void doCalibration(uint16_t* pixels) {
+    // Step 1: Find the pixel that is most different from the background
+    // Compute average background color from frame edges
+    uint32_t bgR = 0, bgG = 0, bgB = 0, bgCount = 0;
+    for (int y = 0; y < DETECT_H; y++) {
+        for (int x = 0; x < DETECT_W; x++) {
+            // Only sample edges (first/last 10%)
+            if (x > DETECT_W/10 && x < DETECT_W*9/10 &&
+                y > DETECT_H/10 && y < DETECT_H*9/10) continue;
+            uint16_t raw = pixels[y * DETECT_W + x];
+            uint16_t px = (raw >> 8) | (raw << 8);
+            bgR += (px >> 11) & 0x1F;
+            bgG += (px >> 5) & 0x3F;
+            bgB += px & 0x1F;
+            bgCount++;
+        }
+    }
+    int16_t avgBgR = bgR / bgCount;
+    int16_t avgBgG = bgG / bgCount;
+    int16_t avgBgB = bgB / bgCount;
+    Serial.printf("[cal] Background: R=%d G=%d B=%d\n", avgBgR, avgBgG, avgBgB);
+
+    // Step 2: Find pixels that stand out from the background
+    // Look for pixels with the highest color distance from background
+    int16_t bestR = 0, bestG = 0, bestB = 0;
+    int bestDist = 0;
+    uint32_t sumR = 0, sumG = 0, sumB = 0;
+    uint32_t objCount = 0;
+    int minX = DETECT_W, maxX = 0, minY = DETECT_H, maxY = 0;
+
+    // First pass: find the peak color distance
+    for (int y = DETECT_H/10; y < DETECT_H*9/10; y++) {
+        for (int x = DETECT_W/10; x < DETECT_W*9/10; x++) {
+            uint16_t raw = pixels[y * DETECT_W + x];
+            uint16_t px = (raw >> 8) | (raw << 8);
+            int16_t r = (px >> 11) & 0x1F;
+            int16_t g = (px >> 5) & 0x3F;
+            int16_t b = px & 0x1F;
+
+            int dist = abs(r - avgBgR) + abs(g - avgBgG) + abs(b - avgBgB);
+            if (dist > bestDist) {
+                bestDist = dist;
+                bestR = r; bestG = g; bestB = b;
+            }
+        }
+    }
+
+    Serial.printf("[cal] Peak distinct pixel: R=%d G=%d B=%d (dist=%d)\n",
+        bestR, bestG, bestB, bestDist);
+
+    if (bestDist < 5) {
+        Serial.println("[cal] FAILED: no distinct object found! Place the dadinho in view.");
+        gameState = STATE_IDLE;
+        return;
+    }
+
+    // Second pass: collect all pixels similar to the peak (within tolerance)
+    int16_t tolR = 4, tolG = 8, tolB = 4;
+    for (int y = DETECT_H/10; y < DETECT_H*9/10; y++) {
+        for (int x = DETECT_W/10; x < DETECT_W*9/10; x++) {
+            uint16_t raw = pixels[y * DETECT_W + x];
+            uint16_t px = (raw >> 8) | (raw << 8);
+            int16_t r = (px >> 11) & 0x1F;
+            int16_t g = (px >> 5) & 0x3F;
+            int16_t b = px & 0x1F;
+
+            if (abs(r - bestR) <= tolR && abs(g - bestG) <= tolG && abs(b - bestB) <= tolB) {
+                sumR += r; sumG += g; sumB += b;
+                objCount++;
+                if (x < minX) minX = x;
+                if (x > maxX) maxX = x;
+                if (y < minY) minY = y;
+                if (y > maxY) maxY = y;
+            }
+        }
+    }
+
+    if (objCount < 5) {
+        Serial.println("[cal] FAILED: object too small! Move the dadinho closer.");
+        gameState = STATE_IDLE;
+        return;
+    }
+
+    // Store calibrated values
+    calR = sumR / objCount;
+    calG = sumG / objCount;
+    calB = sumB / objCount;
+    calTolR = max((int16_t)3, tolR);
+    calTolG = max((int16_t)6, tolG);
+    calTolB = max((int16_t)3, tolB);
+    calPixelCount = objCount;
+    calBboxW = maxX - minX + 1;
+    calBboxH = maxY - minY + 1;
+
+    Serial.printf("[cal] SUCCESS! Color: R=%d G=%d B=%d, %d pixels, bbox=%dx%d\n",
+        calR, calG, calB, calPixelCount, calBboxW, calBboxH);
+    Serial.printf("[cal] Tolerance: R+/-%d G+/-%d B+/-%d\n", calTolR, calTolG, calTolB);
+
+    // Flash LED to confirm
+    digitalWrite(LED_PIN, HIGH);
+    delay(200);
+    digitalWrite(LED_PIN, LOW);
+
+    gameState = STATE_IDLE;  // go back to idle, user presses "Start Game"
 }
 
 void loop() {
@@ -128,29 +251,48 @@ void loop() {
         free(jpg_buf);
     }
 
-    // Scan for yellow pixels + track bounding box
     uint16_t* pixels = (uint16_t*)fb->buf;
-    int rx = DETECT_W / 10;
-    int ry = DETECT_H / 10;
-    int rw = DETECT_W * 8 / 10;
-    int rh = DETECT_H * 8 / 10;
 
-    uint32_t yellowCount = 0;
+    // Handle calibration
+    if (gameState == STATE_CALIBRATING) {
+        doCalibration(pixels);
+        esp_camera_fb_return(fb);
+        delay(10);
+        return;
+    }
+
+    // Detection only runs during gameplay
+    if (gameState != STATE_PLAYING || calR < 0) {
+        esp_camera_fb_return(fb);
+        detector.frameCount = frameNum;
+        if (now - lastPrint >= 5000) {
+            Serial.printf("[idle] fps:%d frames:%d cal:%s\n",
+                detector.fps, frameNum, calR >= 0 ? "yes" : "no");
+            lastPrint = now;
+        }
+        delay(10);
+        return;
+    }
+
+    // --- GAME MODE: detect calibrated dice color ---
+    int rx = DETECT_W / 10, ry = DETECT_H / 10;
+    int rw = DETECT_W * 8 / 10, rh = DETECT_H * 8 / 10;
+
+    uint32_t matchCount = 0;
     int minX = DETECT_W, maxX = 0, minY = DETECT_H, maxY = 0;
 
     for (int y = ry; y < ry + rh; y++) {
         for (int x = rx; x < rx + rw; x++) {
             uint16_t raw = pixels[y * DETECT_W + x];
             uint16_t px = (raw >> 8) | (raw << 8);
+            int16_t r = (px >> 11) & 0x1F;
+            int16_t g = (px >> 5) & 0x3F;
+            int16_t b = px & 0x1F;
 
-            uint8_t r = (px >> 11) & 0x1F;
-            uint8_t g = (px >> 5) & 0x3F;
-            uint8_t b = px & 0x1F;
-
-            if (r >= YELLOW_R_MIN && g >= YELLOW_G_MIN && b <= YELLOW_B_MAX
-                && r > (b + 2)
-                && (g >> 1) > b) {
-                yellowCount++;
+            if (abs(r - calR) <= calTolR &&
+                abs(g - calG) <= calTolG &&
+                abs(b - calB) <= calTolB) {
+                matchCount++;
                 if (x < minX) minX = x;
                 if (x > maxX) maxX = x;
                 if (y < minY) minY = y;
@@ -161,30 +303,28 @@ void loop() {
 
     esp_camera_fb_return(fb);
 
-    // Cluster analysis: is the yellow concentrated like a tiny dice?
-    int bboxW = (yellowCount > 0) ? (maxX - minX + 1) : 0;
-    int bboxH = (yellowCount > 0) ? (maxY - minY + 1) : 0;
-    float density = (bboxW > 0 && bboxH > 0) ? (float)yellowCount / (bboxW * bboxH) : 0;
+    int bboxW = (matchCount > 0) ? (maxX - minX + 1) : 0;
+    int bboxH = (matchCount > 0) ? (maxY - minY + 1) : 0;
+    float density = (bboxW > 0 && bboxH > 0) ? (float)matchCount / (bboxW * bboxH) : 0;
 
-    // Dice = enough yellow pixels, small bounding box, dense cluster
-    bool diceDetected = (yellowCount >= YELLOW_PIXEL_MIN)
-        && (bboxW <= CLUSTER_MAX_SIZE)
-        && (bboxH <= CLUSTER_MAX_SIZE)
-        && (density >= CLUSTER_DENSITY_MIN);
+    // Dice = enough matching pixels, similar size to calibrated, reasonably dense
+    int minPixels = max(5, (int)(calPixelCount * 0.3));
+    int maxBbox = max(calBboxW, calBboxH) * 3;  // allow 3x the calibrated size
+    bool diceDetected = (matchCount >= (uint32_t)minPixels)
+        && (bboxW <= maxBbox) && (bboxH <= maxBbox)
+        && (density >= 0.10f);
 
-    detector.lastChangeRatio = (float)yellowCount / (rw * rh);
+    detector.lastChangeRatio = (float)matchCount / (rw * rh);
     detector.frameCount = frameNum;
-
     bool inCooldown = (now - lastGoalTime) < COOLDOWN_MS;
 
-    // Log detection with cluster info
-    static uint32_t lastYellowLog = 0;
-    if (yellowCount > 0 && (now - lastYellowLog >= 500)) {
-        Serial.printf("[yellow] %d px bbox=%dx%d dens=%.0f%%%s%s\n",
-            yellowCount, bboxW, bboxH, density * 100,
+    static uint32_t lastDetectLog = 0;
+    if (matchCount > 0 && (now - lastDetectLog >= 500)) {
+        Serial.printf("[detect] %d px bbox=%dx%d dens=%.0f%%%s%s\n",
+            matchCount, bboxW, bboxH, density * 100,
             diceDetected ? " DICE!" : "",
-            inCooldown ? " (cooldown)" : "");
-        lastYellowLog = now;
+            inCooldown ? " (cd)" : "");
+        lastDetectLog = now;
     }
 
     // Goal: dice appears after being absent
@@ -197,8 +337,7 @@ void loop() {
         delay(300);
         digitalWrite(LED_PIN, LOW);
 
-        Serial.printf("GOAL #%d! (%d px, %dx%d)\n",
-            detector.goalCount, yellowCount, bboxW, bboxH);
+        Serial.printf("GOAL #%d! (%d px)\n", detector.goalCount, matchCount);
     }
 
     if (diceDetected) {
@@ -212,9 +351,9 @@ void loop() {
     }
 
     if (now - lastPrint >= 5000) {
-        Serial.printf("[stats] fps:%d frames:%d goals:%d yellow:%d bbox=%dx%d armed:%s\n",
-            detector.fps, frameNum, detector.goalCount,
-            yellowCount, bboxW, bboxH, !diceWasPresent ? "yes" : "no");
+        Serial.printf("[game] fps:%d goals:%d match:%d armed:%s\n",
+            detector.fps, detector.goalCount, matchCount,
+            !diceWasPresent ? "yes" : "no");
         lastPrint = now;
     }
 
