@@ -41,6 +41,12 @@ volatile int calBboxW = 0, calBboxH = 0;
 #define COOLDOWN_MS 3000
 #define STABLE_FRAMES_NEEDED 3
 
+// Shared detection state for web console
+volatile int lastMatchCount = 0, lastBboxW = 0, lastBboxH = 0;
+volatile int lastMinPx = 0, lastMaxPx = 0, lastMaxBbox = 0;
+volatile float lastDensity = 0;
+volatile const char* lastRejectReason = "";
+
 // Called from HTTP handler to trigger calibration
 void requestCalibration() {
     gameState = STATE_CALIBRATING;
@@ -315,6 +321,22 @@ void loop() {
         && ((int)matchCount <= maxPixels)                    // TOO MANY = hand, not dice
         && (bboxW <= maxBbox) && (bboxH <= maxBbox)          // TOO BIG = hand, not dice
         && (density >= 0.12f);                               // must be dense cluster
+
+    // Update shared state for web console
+    lastMatchCount = matchCount;
+    lastBboxW = bboxW;
+    lastBboxH = bboxH;
+    lastMinPx = minPixels;
+    lastMaxPx = maxPixels;
+    lastMaxBbox = maxBbox;
+    lastDensity = density * 100;
+    if (matchCount == 0) lastRejectReason = "";
+    else if (diceDetected) lastRejectReason = "DICE";
+    else if ((int)matchCount > maxPixels) lastRejectReason = "TOO-BIG";
+    else if (bboxW > maxBbox || bboxH > maxBbox) lastRejectReason = "BBOX-BIG";
+    else if ((int)matchCount < minPixels) lastRejectReason = "TOO-SMALL";
+    else if (density < 0.12f) lastRejectReason = "SPARSE";
+    else lastRejectReason = "REJECTED";
 
     detector.lastChangeRatio = (float)matchCount / (rw * rh);
     detector.frameCount = frameNum;

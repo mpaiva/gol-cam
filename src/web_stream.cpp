@@ -58,15 +58,24 @@ static esp_err_t status_handler(httpd_req_t *req) {
     char buf[512];
     bool scored = goalJustScored;
     if (scored) goalJustScored = false;
+    // Include detection details for the console log
+    extern volatile int lastMatchCount, lastBboxW, lastBboxH, lastMinPx, lastMaxPx, lastMaxBbox;
+    extern volatile float lastDensity;
+    extern volatile const char* lastRejectReason;
     snprintf(buf, sizeof(buf),
         "{\"goals\":%d,\"fps\":%d,\"change\":%.2f,\"frames\":%d,\"scored\":%s,"
         "\"state\":%d,\"calibrated\":%s,\"calR\":%d,\"calG\":%d,\"calB\":%d,"
-        "\"calPx\":%d,\"calW\":%d,\"calH\":%d}",
+        "\"calPx\":%d,\"calW\":%d,\"calH\":%d,"
+        "\"matchPx\":%d,\"bboxW\":%d,\"bboxH\":%d,\"density\":%.0f,"
+        "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\"}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
         (int)gameState, calR >= 0 ? "true" : "false",
         (int)calR, (int)calG, (int)calB,
-        (int)calPixelCount, (int)calBboxW, (int)calBboxH);
+        (int)calPixelCount, (int)calBboxW, (int)calBboxH,
+        (int)lastMatchCount, (int)lastBboxW, (int)lastBboxH, (float)lastDensity,
+        (int)lastMinPx, (int)lastMaxPx, (int)lastMaxBbox,
+        lastRejectReason ? lastRejectReason : "");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, buf, strlen(buf));
@@ -119,6 +128,11 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "#btn-stop{background:#c00;color:#fff;display:none}"
         "#info{color:#888;font-size:0.85em;margin:5px;text-align:center}"
         "#cal-info{color:#f90;font-size:0.9em;margin:5px;display:none}"
+        "#console{width:100%;max-width:400px;height:180px;background:#0a0a0a;"
+        "border:1px solid #333;border-radius:6px;margin:10px 0;padding:8px;"
+        "font-family:monospace;font-size:0.7em;color:#0f0;overflow-y:auto;"
+        "line-height:1.4}"
+        ".log-reject{color:#f44}.log-dice{color:#0f0}.log-cal{color:#f90}"
         ".controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin:8px 0}"
         "#state-badge{font-size:0.8em;padding:4px 12px;border-radius:12px;margin:5px}"
         ".s-idle{background:#333;color:#888}"
@@ -138,10 +152,19 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "</div>"
         "<div id='cal-info'></div>"
         "<div id='info'>Place the dadinho in view, then press Calibrate</div>"
+        "<div id='console'></div>"
         "<script>"
         "document.getElementById('cam').src='http://'+location.hostname+':81/stream';"
         "const $=id=>document.getElementById(id);"
         "let lastState=-1;"
+        "const con=$('console');"
+        "function log(msg,cls){"
+        "const d=document.createElement('div');"
+        "if(cls)d.className=cls;"
+        "d.textContent=msg;"
+        "con.appendChild(d);"
+        "if(con.children.length>100)con.removeChild(con.firstChild);"
+        "con.scrollTop=con.scrollHeight;}"
 
         "async function calibrate(){"
         "$('btn-cal').textContent='Calibrating...';"
@@ -175,6 +198,17 @@ static esp_err_t index_handler(httpd_req_t *req) {
         // Update score
         "$('score').textContent=d.goals;"
         "$('info').textContent='fps:'+d.fps;"
+        // Console log
+        "if(d.state===1)log('Calibrating...','log-cal');"
+        "if(d.calibrated&&lastState===1&&d.state===0){"
+        "log('Calibrated: color=RGB565('+d.calR+','+d.calG+','+d.calB+"
+        "') size='+d.calPx+'px bbox='+d.calW+'x'+d.calH+'px','log-cal');"
+        "log('Limits: pixels '+Math.max(5,Math.floor(d.calPx/3))+'-'+(d.calPx*4)+"
+        "', bbox<='+Math.max(d.calW,d.calH)*2+'px','log-cal');}"
+        "if(d.state===2&&d.matchPx>0){"
+        "const cls=d.reject==='DICE'?'log-dice':'log-reject';"
+        "log(d.reject+': '+d.matchPx+'px bbox='+d.bboxW+'x'+d.bboxH+"
+        "' dens='+d.density+'% (lim:'+d.minPx+'-'+d.maxPx+' bbox<='+d.maxBbox+')',cls);}"
         // Goal flash
         "if(d.scored){"
         "$('goal-flash').classList.add('active');$('goal-text').classList.add('active');"
