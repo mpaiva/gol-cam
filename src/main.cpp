@@ -307,12 +307,14 @@ void loop() {
     int bboxH = (matchCount > 0) ? (maxY - minY + 1) : 0;
     float density = (bboxW > 0 && bboxH > 0) ? (float)matchCount / (bboxW * bboxH) : 0;
 
-    // Dice = enough matching pixels, similar size to calibrated, reasonably dense
-    int minPixels = max(5, (int)(calPixelCount * 0.3));
-    int maxBbox = max(calBboxW, calBboxH) * 3;  // allow 3x the calibrated size
-    bool diceDetected = (matchCount >= (uint32_t)minPixels)
-        && (bboxW <= maxBbox) && (bboxH <= maxBbox)
-        && (density >= 0.10f);
+    // Strict size check: must look like the calibrated dice, not a hand
+    int minPixels = max(5, (int)(calPixelCount / 3));       // at least 1/3 of calibrated
+    int maxPixels = calPixelCount * 4;                       // at most 4x calibrated
+    int maxBbox = max(calBboxW, calBboxH) * 2;              // bbox can't exceed 2x calibrated
+    bool diceDetected = ((int)matchCount >= minPixels)
+        && ((int)matchCount <= maxPixels)                    // TOO MANY = hand, not dice
+        && (bboxW <= maxBbox) && (bboxH <= maxBbox)          // TOO BIG = hand, not dice
+        && (density >= 0.12f);                               // must be dense cluster
 
     detector.lastChangeRatio = (float)matchCount / (rw * rh);
     detector.frameCount = frameNum;
@@ -320,10 +322,19 @@ void loop() {
 
     static uint32_t lastDetectLog = 0;
     if (matchCount > 0 && (now - lastDetectLog >= 500)) {
-        Serial.printf("[detect] %d px bbox=%dx%d dens=%.0f%%%s%s\n",
+        const char* reason = "";
+        if (!diceDetected) {
+            if ((int)matchCount > maxPixels) reason = " TOO-BIG";
+            else if (bboxW > maxBbox || bboxH > maxBbox) reason = " BBOX-BIG";
+            else if ((int)matchCount < minPixels) reason = " TOO-SMALL";
+            else if (density < 0.12f) reason = " SPARSE";
+        }
+        Serial.printf("[detect] %d px bbox=%dx%d dens=%.0f%% (lim:%d-%d bbox<=%d)%s%s%s\n",
             matchCount, bboxW, bboxH, density * 100,
-            diceDetected ? " DICE!" : "",
-            inCooldown ? " (cd)" : "");
+            minPixels, maxPixels, maxBbox,
+            diceDetected ? " DICE!" : reason,
+            inCooldown ? " (cd)" : "",
+            !diceWasPresent ? "" : " (seen)");
         lastDetectLog = now;
     }
 
