@@ -58,6 +58,7 @@ uint8_t* goalSnapshotBuf = nullptr;
 size_t goalSnapshotLen = 0;
 SemaphoreHandle_t goalSnapshotMutex = nullptr;
 volatile uint32_t goalSnapshotSeq = 0;  // increments each goal, so browser knows when new one is ready
+volatile uint32_t lastGoalTimeMs = 0;  // millis() when last gol was scored (for cooldown)
 
 // Called from HTTP handler to trigger calibration
 void requestCalibration() {
@@ -330,7 +331,6 @@ void doCalibration(camera_fb_t* fb, uint16_t* pixels) {
 void loop() {
     static bool diceWasPresent = false;
     static uint32_t noDiceFrames = 0;
-    static uint32_t lastGoalTime = 0;
     static uint32_t frameNum = 0;
     static uint32_t fpsCount = 0;
     static uint32_t lastFpsTime = millis();
@@ -474,7 +474,7 @@ void loop() {
     // Check goal BEFORE converting to JPEG, so we can save the goal snapshot
     detector.lastChangeRatio = (float)matchCount / (rw * rh);
     detector.frameCount = frameNum;
-    bool inCooldown = (now - lastGoalTime) < COOLDOWN_MS;
+    bool inCooldown = (now - lastGoalTimeMs) < COOLDOWN_MS;
     bool isGoal = diceDetected && !diceWasPresent && !inCooldown && noDiceFrames > STABLE_FRAMES_NEEDED;
 
     // Convert to JPEG (with rectangle drawn)
@@ -518,7 +518,7 @@ void loop() {
 
     // Goal: dice appears after being absent
     if (isGoal) {
-        lastGoalTime = now;
+        lastGoalTimeMs = now;
         detector.goalCount++;
         goalJustScored = true;
 

@@ -30,6 +30,7 @@ extern uint8_t* goalSnapshotBuf;
 extern size_t goalSnapshotLen;
 extern SemaphoreHandle_t goalSnapshotMutex;
 extern volatile uint32_t goalSnapshotSeq;
+extern volatile uint32_t lastGoalTimeMs;
 
 // Actions (defined in main.cpp)
 extern void requestCalibration();
@@ -76,13 +77,16 @@ static esp_err_t status_handler(httpd_req_t *req) {
     extern volatile int lastMatchCount, lastBboxW, lastBboxH, lastMinPx, lastMaxPx, lastMaxBbox;
     extern volatile float lastDensity;
     extern volatile const char* lastRejectReason;
+    uint32_t now = millis();
+    uint32_t elapsed = now - lastGoalTimeMs;
+    int cdRemain = (lastGoalTimeMs > 0 && elapsed < 10000) ? (int)(10000 - elapsed) : 0;
     snprintf(buf, sizeof(buf),
         "{\"goals\":%d,\"fps\":%d,\"change\":%.2f,\"frames\":%d,\"scored\":%s,"
         "\"state\":%d,\"calibrated\":%s,\"calR\":%d,\"calG\":%d,\"calB\":%d,"
         "\"calPx\":%d,\"calW\":%d,\"calH\":%d,"
         "\"matchPx\":%d,\"bboxW\":%d,\"bboxH\":%d,\"density\":%.0f,"
         "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\","
-        "\"calMsg\":\"%s\",\"hasSnap\":%s,\"goalSeq\":%d}",
+        "\"calMsg\":\"%s\",\"hasSnap\":%s,\"goalSeq\":%d,\"cdRemain\":%d}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
         (int)gameState, calR >= 0 ? "true" : "false",
@@ -93,7 +97,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         lastRejectReason ? lastRejectReason : "",
         calFeedback,
         calSnapshotLen > 0 ? "true" : "false",
-        (int)goalSnapshotSeq);
+        (int)goalSnapshotSeq, cdRemain);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, buf, strlen(buf));
@@ -187,21 +191,33 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "font-size:6em;font-weight:bold;color:#0f0;opacity:0;transition:opacity 0.5s;"
         "pointer-events:none;text-shadow:0 0 30px #0f0}"
         ".active{opacity:1 !important}"
-        ".btn{padding:12px 30px;font-size:1.1em;border:none;border-radius:8px;"
-        "cursor:pointer;margin:5px;font-weight:bold;transition:all 0.2s}"
+        ".btn{padding:10px 20px;font-size:1em;border:none;border-radius:8px;"
+        "cursor:pointer;font-weight:bold;transition:all 0.2s}"
         ".btn:active{transform:scale(0.95)}"
-        "#btn-cal{background:#f90;color:#000}"
-        "#btn-start{background:#0a0;color:#fff}"
-        "#btn-pause{background:#ff0;color:#000;display:none}"
-        "#btn-resume{background:#0a0;color:#fff;display:none}"
-        "#btn-stop{background:#c00;color:#fff;display:none}"
-        "#btn-reset{background:#666;color:#fff;display:none}"
+        ".btn-cal{background:#f90;color:#000}"
+        ".btn-start{background:#0a0;color:#fff}"
         "#info{color:#888;font-size:0.85em;margin:5px;text-align:center}"
         "#cal-info{color:#f90;font-size:0.9em;margin:5px;display:none}"
         "#cal-snap{max-width:100%;border:2px solid #f90;border-radius:8px;margin:8px 0;display:none}"
         "#cal-feedback{color:#fff;font-size:0.85em;margin:5px;padding:8px 12px;"
         "background:#222;border-radius:6px;display:none;max-width:400px;text-align:center}"
         ".cal-ok{border-left:3px solid #0f0}.cal-fail{border-left:3px solid #f44}"
+        // Game control bar
+        "#game-bar{display:none;width:100%;max-width:400px;background:#1a1a1a;"
+        "border:1px solid #333;border-radius:8px;padding:8px;margin:4px 0}"
+        "#game-bar .bar-row{display:flex;align-items:center;justify-content:center;gap:8px}"
+        "#game-bar .btn{padding:8px 16px;font-size:0.9em}"
+        ".btn-pause{background:#ff0;color:#000}"
+        ".btn-resume{background:#0a0;color:#fff}"
+        ".btn-reset{background:#555;color:#fff}"
+        ".btn-end{background:#c00;color:#fff}"
+        // Countdown
+        "#countdown{display:none;text-align:center;margin:4px 0}"
+        "#cd-bar{width:100%;max-width:400px;height:6px;background:#333;border-radius:3px;"
+        "overflow:hidden;margin:4px 0}"
+        "#cd-fill{height:100%;background:#0f0;transition:width 0.4s linear;width:100%}"
+        "#cd-text{color:#0f0;font-size:0.85em;font-weight:bold}"
+        // Gol log
         "#gol-log{width:100%;max-width:400px;margin:10px 0}"
         ".gol-entry{background:#1a1a1a;border:1px solid #333;border-radius:8px;"
         "margin:8px 0;padding:10px;display:flex;gap:10px;align-items:center;cursor:pointer}"
@@ -218,7 +234,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "font-family:monospace;font-size:0.7em;color:#0f0;overflow-y:auto;"
         "line-height:1.4}"
         ".log-reject{color:#f44}.log-dice{color:#0f0}.log-cal{color:#f90}"
-        ".controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin:8px 0}"
+        ".idle-controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin:8px 0}"
         "#state-badge{font-size:0.8em;padding:4px 12px;border-radius:12px;margin:5px}"
         ".s-idle{background:#333;color:#888}"
         ".s-cal{background:#f90;color:#000}"
@@ -232,13 +248,24 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "<div id='state-badge' class='s-idle'>IDLE</div>"
         "<div id='score' style='display:none'>0</div>"
         "<img id='cam'/>"
-        "<div class='controls'>"
-        "<button class='btn' id='btn-cal' onclick='calibrate()'>Calibrate Dice</button>"
-        "<button class='btn' id='btn-start' onclick='startGame()'>Start Game</button>"
-        "<button class='btn' id='btn-pause' onclick='pauseGame()'>Pause</button>"
-        "<button class='btn' id='btn-resume' onclick='resumeGame()'>Resume</button>"
-        "<button class='btn' id='btn-reset' onclick='resetGame()'>Reset</button>"
-        "<button class='btn' id='btn-stop' onclick='stopGame()'>End Game</button>"
+        // Game control bar (below camera, visible during play/pause)
+        "<div id='game-bar'>"
+        "<div class='bar-row'>"
+        "<button class='btn btn-pause' id='btn-pause' onclick='pauseGame()'>Pause</button>"
+        "<button class='btn btn-resume' id='btn-resume' onclick='resumeGame()' style='display:none'>Resume</button>"
+        "<button class='btn btn-reset' id='btn-reset' onclick='resetGame()'>Reset</button>"
+        "<button class='btn btn-end' id='btn-stop' onclick='stopGame()'>End Game</button>"
+        "</div>"
+        "</div>"
+        // Countdown bar
+        "<div id='countdown'>"
+        "<div id='cd-bar'><div id='cd-fill'></div></div>"
+        "<div id='cd-text'></div>"
+        "</div>"
+        // Idle controls (calibrate/start)
+        "<div class='idle-controls' id='idle-controls'>"
+        "<button class='btn btn-cal' id='btn-cal' onclick='calibrate()'>Calibrate Dice</button>"
+        "<button class='btn btn-start' id='btn-start' onclick='startGame()' style='display:none'>Start Game</button>"
         "</div>"
         "<div id='cal-feedback'></div>"
         "<img id='cal-snap'/>"
@@ -289,14 +316,16 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "async function resetGame(){await fetch('/reset');"
         "glog.innerHTML='';lastGolSeq=0;}"
 
-        "function updateButtons(st,cal){"
-        "const hide='none',show='';"
-        "$('btn-cal').style.display=(st===0)?show:hide;"
-        "$('btn-start').style.display=(st===0&&cal)?show:hide;"
-        "$('btn-pause').style.display=(st===2)?show:hide;"
-        "$('btn-resume').style.display=(st===3)?show:hide;"
-        "$('btn-reset').style.display=(st===2||st===3)?show:hide;"
-        "$('btn-stop').style.display=(st===2||st===3)?show:hide;}"
+        "function updateUI(st,cal){"
+        "const playing=st===2,paused=st===3,inGame=playing||paused,idle=st===0;"
+        // Game bar visibility
+        "$('game-bar').style.display=inGame?'':'none';"
+        "$('btn-pause').style.display=playing?'':'none';"
+        "$('btn-resume').style.display=paused?'':'none';"
+        // Idle controls
+        "$('idle-controls').style.display=idle?'':'none';"
+        "$('btn-start').style.display=(idle&&cal)?'':'none';"
+        "$('btn-cal').style.display=idle?'':'none';}"
 
         "setInterval(async()=>{"
         "try{const r=await fetch('/status');const d=await r.json();"
@@ -313,7 +342,14 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "$('score').style.display='';}"
         "else if(d.state===3){b.textContent='PAUSED';b.className='s-pause';"
         "$('score').style.display='';}"
-        "updateButtons(d.state,d.calibrated);}"
+        "updateUI(d.state,d.calibrated);}"
+        // Countdown
+        "if(d.cdRemain>0&&(d.state===2)){"
+        "const sec=Math.ceil(d.cdRemain/1000);"
+        "$('countdown').style.display='';"
+        "$('cd-text').textContent='Detecting in '+sec+'s...';"
+        "$('cd-fill').style.width=(d.cdRemain/100)+'%';"
+        "}else{$('countdown').style.display='none';}"
         // Update calibration info
         "if(d.calibrated){$('cal-info').style.display='';"
         "$('cal-info').textContent='Dice: '+d.calPx+'px, '+d.calW+'x'+d.calH+"
