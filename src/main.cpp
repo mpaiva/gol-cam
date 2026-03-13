@@ -47,6 +47,12 @@ volatile int lastMinPx = 0, lastMaxPx = 0, lastMaxBbox = 0;
 volatile float lastDensity = 0;
 volatile const char* lastRejectReason = "";
 
+// Calibration snapshot: JPEG of the frame with detected object highlighted
+uint8_t* calSnapshotBuf = nullptr;
+size_t calSnapshotLen = 0;
+SemaphoreHandle_t calSnapshotMutex = nullptr;
+char calFeedback[256] = "";  // calibration feedback message
+
 // Called from HTTP handler to trigger calibration
 void requestCalibration() {
     gameState = STATE_CALIBRATING;
@@ -78,6 +84,12 @@ void setup() {
     if (!frameStore.begin()) {
         Serial.println("FATAL: FrameStore init failed!");
         while (true) delay(1000);
+    }
+
+    calSnapshotBuf = (uint8_t*)ps_malloc(64 * 1024);
+    calSnapshotMutex = xSemaphoreCreateMutex();
+    if (!calSnapshotBuf || !calSnapshotMutex) {
+        Serial.println("WARN: cal snapshot alloc failed");
     }
 
     if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_RGB565)) {
@@ -113,14 +125,50 @@ void setup() {
     Serial.println("=== gol-cam ready ===");
 }
 
+// Save calibration snapshot JPEG with bbox drawn
+void saveCalSnapshot(camera_fb_t* fb, uint16_t* pixels, int x1, int y1, int x2, int y2, uint16_t color) {
+    if (!calSnapshotBuf || !calSnapshotMutex) return;
+
+    // Draw bounding box on frame
+    if (x1 >= 0) {
+        for (int x = x1; x <= x2; x++) {
+            pixels[y1 * DETECT_W + x] = color;
+            if (y1 + 1 < DETECT_H) pixels[(y1+1) * DETECT_W + x] = color;
+            pixels[y2 * DETECT_W + x] = color;
+            if (y2 - 1 >= 0) pixels[(y2-1) * DETECT_W + x] = color;
+        }
+        for (int y = y1; y <= y2; y++) {
+            pixels[y * DETECT_W + x1] = color;
+            if (x1 + 1 < DETECT_W) pixels[y * DETECT_W + x1 + 1] = color;
+            pixels[y * DETECT_W + x2] = color;
+            if (x2 - 1 >= 0) pixels[y * DETECT_W + x2 - 1] = color;
+        }
+    }
+
+    // Convert to JPEG and store
+    uint8_t* jpg_buf = NULL;
+    size_t jpg_len = 0;
+    if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
+        xSemaphoreTake(calSnapshotMutex, portMAX_DELAY);
+        if (jpg_len <= 64 * 1024) {
+            memcpy(calSnapshotBuf, jpg_buf, jpg_len);
+            calSnapshotLen = jpg_len;
+        }
+        xSemaphoreGive(calSnapshotMutex);
+        // Also update the live stream
+        frameStore.update(jpg_buf, jpg_len);
+        free(jpg_buf);
+    }
+}
+
 // Find the brightest/most-distinct object in the frame for calibration
-void doCalibration(uint16_t* pixels) {
+void doCalibration(camera_fb_t* fb, uint16_t* pixels) {
+    snprintf(calFeedback, sizeof(calFeedback), "Sampling background...");
+
     // Step 1: Find the pixel that is most different from the background
-    // Compute average background color from frame edges
     uint32_t bgR = 0, bgG = 0, bgB = 0, bgCount = 0;
     for (int y = 0; y < DETECT_H; y++) {
         for (int x = 0; x < DETECT_W; x++) {
-            // Only sample edges (first/last 10%)
             if (x > DETECT_W/10 && x < DETECT_W*9/10 &&
                 y > DETECT_H/10 && y < DETECT_H*9/10) continue;
             uint16_t raw = pixels[y * DETECT_W + x];
@@ -136,15 +184,13 @@ void doCalibration(uint16_t* pixels) {
     int16_t avgBgB = bgB / bgCount;
     Serial.printf("[cal] Background: R=%d G=%d B=%d\n", avgBgR, avgBgG, avgBgB);
 
-    // Step 2: Find pixels that stand out from the background
-    // Look for pixels with the highest color distance from background
+    // Step 2: Find the peak distinct pixel
     int16_t bestR = 0, bestG = 0, bestB = 0;
     int bestDist = 0;
     uint32_t sumR = 0, sumG = 0, sumB = 0;
     uint32_t objCount = 0;
     int minX = DETECT_W, maxX = 0, minY = DETECT_H, maxY = 0;
 
-    // First pass: find the peak color distance
     for (int y = DETECT_H/10; y < DETECT_H*9/10; y++) {
         for (int x = DETECT_W/10; x < DETECT_W*9/10; x++) {
             uint16_t raw = pixels[y * DETECT_W + x];
@@ -165,12 +211,16 @@ void doCalibration(uint16_t* pixels) {
         bestR, bestG, bestB, bestDist);
 
     if (bestDist < 5) {
-        Serial.println("[cal] FAILED: no distinct object found! Place the dadinho in view.");
+        snprintf(calFeedback, sizeof(calFeedback),
+            "FAILED: No distinct object found. Place the dadinho in the center of the frame and try again.");
+        // Save snapshot without bbox
+        saveCalSnapshot(fb, pixels, -1, 0, 0, 0, 0);
+        Serial.println("[cal] FAILED: no distinct object found!");
         gameState = STATE_IDLE;
         return;
     }
 
-    // Second pass: collect all pixels similar to the peak (within tolerance)
+    // Second pass: collect similar pixels
     int16_t tolR = 4, tolG = 8, tolB = 4;
     for (int y = DETECT_H/10; y < DETECT_H*9/10; y++) {
         for (int x = DETECT_W/10; x < DETECT_W*9/10; x++) {
@@ -192,7 +242,10 @@ void doCalibration(uint16_t* pixels) {
     }
 
     if (objCount < 5) {
-        Serial.println("[cal] FAILED: object too small! Move the dadinho closer.");
+        snprintf(calFeedback, sizeof(calFeedback),
+            "FAILED: Object too small (%d pixels). Move the dadinho closer to the camera.", (int)objCount);
+        saveCalSnapshot(fb, pixels, -1, 0, 0, 0, 0);
+        Serial.println("[cal] FAILED: object too small!");
         gameState = STATE_IDLE;
         return;
     }
@@ -208,16 +261,33 @@ void doCalibration(uint16_t* pixels) {
     calBboxW = maxX - minX + 1;
     calBboxH = maxY - minY + 1;
 
+    int limitMin = max(5, (int)(calPixelCount / 3));
+    int limitMax = calPixelCount * 4;
+    int limitBbox = max(calBboxW, calBboxH) * 2;
+
+    snprintf(calFeedback, sizeof(calFeedback),
+        "OK! Found dice: %d pixels, %dx%d px. Color RGB565(%d,%d,%d). "
+        "Detection limits: %d-%d pixels, bbox <= %d px.",
+        (int)calPixelCount, calBboxW, calBboxH,
+        (int)calR, (int)calG, (int)calB,
+        limitMin, limitMax, limitBbox);
+
+    // Save snapshot with green bbox around detected object
+    int bx1 = max(0, minX - 2);
+    int by1 = max(0, minY - 2);
+    int bx2 = min(DETECT_W - 1, maxX + 2);
+    int by2 = min(DETECT_H - 1, maxY + 2);
+    saveCalSnapshot(fb, pixels, bx1, by1, bx2, by2, 0xE007);  // green
+
     Serial.printf("[cal] SUCCESS! Color: R=%d G=%d B=%d, %d pixels, bbox=%dx%d\n",
         calR, calG, calB, calPixelCount, calBboxW, calBboxH);
-    Serial.printf("[cal] Tolerance: R+/-%d G+/-%d B+/-%d\n", calTolR, calTolG, calTolB);
 
     // Flash LED to confirm
     digitalWrite(LED_PIN, HIGH);
     delay(200);
     digitalWrite(LED_PIN, LOW);
 
-    gameState = STATE_IDLE;  // go back to idle, user presses "Start Game"
+    gameState = STATE_IDLE;
 }
 
 void loop() {
@@ -253,14 +323,8 @@ void loop() {
 
     // Handle calibration
     if (gameState == STATE_CALIBRATING) {
-        doCalibration(pixels);
-        // Still convert to JPEG so stream doesn't stall
-        uint8_t* jpg_buf = NULL;
-        size_t jpg_len = 0;
-        if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
-            frameStore.update(jpg_buf, jpg_len);
-            free(jpg_buf);
-        }
+        doCalibration(fb, pixels);
+        // saveCalSnapshot already updated frameStore and saved the snapshot
         esp_camera_fb_return(fb);
         delay(10);
         return;

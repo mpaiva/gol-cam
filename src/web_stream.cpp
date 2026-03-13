@@ -19,6 +19,12 @@ extern volatile GameState gameState;
 extern volatile int16_t calR, calG, calB;
 extern volatile int calPixelCount, calBboxW, calBboxH;
 
+// Calibration snapshot (defined in main.cpp)
+extern uint8_t* calSnapshotBuf;
+extern size_t calSnapshotLen;
+extern SemaphoreHandle_t calSnapshotMutex;
+extern char calFeedback[];
+
 // Actions (defined in main.cpp)
 extern void requestCalibration();
 extern void requestStart();
@@ -55,10 +61,9 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
-    char buf[512];
+    char buf[768];
     bool scored = goalJustScored;
     if (scored) goalJustScored = false;
-    // Include detection details for the console log
     extern volatile int lastMatchCount, lastBboxW, lastBboxH, lastMinPx, lastMaxPx, lastMaxBbox;
     extern volatile float lastDensity;
     extern volatile const char* lastRejectReason;
@@ -67,7 +72,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"state\":%d,\"calibrated\":%s,\"calR\":%d,\"calG\":%d,\"calB\":%d,"
         "\"calPx\":%d,\"calW\":%d,\"calH\":%d,"
         "\"matchPx\":%d,\"bboxW\":%d,\"bboxH\":%d,\"density\":%.0f,"
-        "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\"}",
+        "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\","
+        "\"calMsg\":\"%s\",\"hasSnap\":%s}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
         (int)gameState, calR >= 0 ? "true" : "false",
@@ -75,10 +81,26 @@ static esp_err_t status_handler(httpd_req_t *req) {
         (int)calPixelCount, (int)calBboxW, (int)calBboxH,
         (int)lastMatchCount, (int)lastBboxW, (int)lastBboxH, (float)lastDensity,
         (int)lastMinPx, (int)lastMaxPx, (int)lastMaxBbox,
-        lastRejectReason ? lastRejectReason : "");
+        lastRejectReason ? lastRejectReason : "",
+        calFeedback,
+        calSnapshotLen > 0 ? "true" : "false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, buf, strlen(buf));
+}
+
+static esp_err_t cal_snapshot_handler(httpd_req_t *req) {
+    if (!calSnapshotBuf || !calSnapshotMutex || calSnapshotLen == 0) {
+        httpd_resp_send_404(req);
+        return ESP_OK;
+    }
+    xSemaphoreTake(calSnapshotMutex, portMAX_DELAY);
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    esp_err_t res = httpd_resp_send(req, (const char*)calSnapshotBuf, calSnapshotLen);
+    xSemaphoreGive(calSnapshotMutex);
+    return res;
 }
 
 static esp_err_t calibrate_handler(httpd_req_t *req) {
@@ -128,6 +150,10 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "#btn-stop{background:#c00;color:#fff;display:none}"
         "#info{color:#888;font-size:0.85em;margin:5px;text-align:center}"
         "#cal-info{color:#f90;font-size:0.9em;margin:5px;display:none}"
+        "#cal-snap{max-width:100%;border:2px solid #f90;border-radius:8px;margin:8px 0;display:none}"
+        "#cal-feedback{color:#fff;font-size:0.85em;margin:5px;padding:8px 12px;"
+        "background:#222;border-radius:6px;display:none;max-width:400px;text-align:center}"
+        ".cal-ok{border-left:3px solid #0f0}.cal-fail{border-left:3px solid #f44}"
         "#console{width:100%;max-width:400px;height:180px;background:#0a0a0a;"
         "border:1px solid #333;border-radius:6px;margin:10px 0;padding:8px;"
         "font-family:monospace;font-size:0.7em;color:#0f0;overflow-y:auto;"
@@ -150,6 +176,8 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "<button class='btn' id='btn-start' onclick='startGame()'>Start Game</button>"
         "<button class='btn' id='btn-stop' onclick='stopGame()'>Stop Game</button>"
         "</div>"
+        "<div id='cal-feedback'></div>"
+        "<img id='cal-snap'/>"
         "<div id='cal-info'></div>"
         "<div id='info'>Place the dadinho in view, then press Calibrate</div>"
         "<div id='console'></div>"
@@ -169,11 +197,24 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "async function calibrate(){"
         "$('btn-cal').textContent='Calibrating...';"
         "$('btn-cal').disabled=true;"
+        "$('cal-feedback').style.display='block';"
+        "$('cal-feedback').textContent='Analyzing frame...';"
+        "$('cal-feedback').className='';"
         "await fetch('/calibrate');"
-        "setTimeout(()=>{$('btn-cal').textContent='Calibrate Dice';"
+        "setTimeout(async()=>{"
+        "try{const r=await fetch('/status');const d=await r.json();"
+        "if(d.calMsg){"
+        "$('cal-feedback').textContent=d.calMsg;"
+        "$('cal-feedback').className=d.calibrated?'cal-ok':'cal-fail';}"
+        "if(d.hasSnap){"
+        "$('cal-snap').src='/cal-snapshot?t='+Date.now();"
+        "$('cal-snap').style.display='block';}"
+        "}catch(e){}"
+        "$('btn-cal').textContent='Calibrate Dice';"
         "$('btn-cal').disabled=false;},1500);}"
 
-        "async function startGame(){await fetch('/start');}"
+        "async function startGame(){await fetch('/start');"
+        "$('cal-snap').style.display='none';$('cal-feedback').style.display='none';}"
         "async function stopGame(){await fetch('/stop');}"
 
         "setInterval(async()=>{"
@@ -231,11 +272,13 @@ void startCameraServer() {
         httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler };
         httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = status_handler };
         httpd_uri_t cal_uri = { .uri = "/calibrate", .method = HTTP_GET, .handler = calibrate_handler };
+        httpd_uri_t cal_snap_uri = { .uri = "/cal-snapshot", .method = HTTP_GET, .handler = cal_snapshot_handler };
         httpd_uri_t start_uri = { .uri = "/start", .method = HTTP_GET, .handler = start_handler };
         httpd_uri_t stop_uri = { .uri = "/stop", .method = HTTP_GET, .handler = stop_handler };
         httpd_register_uri_handler(server, &index_uri);
         httpd_register_uri_handler(server, &status_uri);
         httpd_register_uri_handler(server, &cal_uri);
+        httpd_register_uri_handler(server, &cal_snap_uri);
         httpd_register_uri_handler(server, &start_uri);
         httpd_register_uri_handler(server, &stop_uri);
         Serial.println("Web server started on port 80");
