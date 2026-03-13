@@ -387,8 +387,8 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "else if(d.state===2){b.textContent='PLAYING';b.className='s-play';"
         "$('score').style.display='';}"
         "else if(d.state===3){b.textContent='PAUSED';b.className='s-pause';"
-        "$('score').style.display='';}"
-        "updateUI(d.state,d.calibrated);}"
+        "$('score').style.display='';}}"
+        "updateUI(d.state,d.calibrated);"
         // Countdown
         "if(d.cdRemain>0&&(d.state===2)){"
         "const sec=Math.ceil(d.cdRemain/1000);"
