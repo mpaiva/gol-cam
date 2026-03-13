@@ -8,6 +8,8 @@
 #include "pins.h"
 #include "goal_detector.h"
 #include "frame_store.h"
+#include "mode_select.h"
+#include "match_dashboard.h"
 
 extern GoalDetector detector;
 extern FrameStore frameStore;
@@ -72,7 +74,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
-    char buf[768];
+    char buf[896];
     bool scored = goalJustScored;
     if (scored) goalJustScored = false;
     extern volatile int lastMatchCount, lastBboxW, lastBboxH, lastMinPx, lastMaxPx, lastMaxBbox;
@@ -81,13 +83,22 @@ static esp_err_t status_handler(httpd_req_t *req) {
     uint32_t now = millis();
     uint32_t elapsed = now - lastGoalTimeMs;
     int cdRemain = (lastGoalTimeMs > 0 && elapsed < 10000) ? (int)(10000 - elapsed) : 0;
+    const char* role = "single";
+    const char* peer = "";
+#ifdef BOARD_ROLE
+    role = BOARD_ROLE;
+#endif
+#ifdef PEER_IP
+    peer = PEER_IP;
+#endif
     snprintf(buf, sizeof(buf),
         "{\"goals\":%d,\"fps\":%d,\"change\":%.2f,\"frames\":%d,\"scored\":%s,"
         "\"state\":%d,\"calibrated\":%s,\"calR\":%d,\"calG\":%d,\"calB\":%d,"
         "\"calPx\":%d,\"calW\":%d,\"calH\":%d,"
         "\"matchPx\":%d,\"bboxW\":%d,\"bboxH\":%d,\"density\":%.0f,"
         "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\","
-        "\"calMsg\":\"%s\",\"hasSnap\":%s,\"goalSeq\":%d,\"cdRemain\":%d}",
+        "\"calMsg\":\"%s\",\"hasSnap\":%s,\"goalSeq\":%d,\"cdRemain\":%d,"
+        "\"role\":\"%s\",\"peer\":\"%s\"}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
         (int)gameState, calR >= 0 ? "true" : "false",
@@ -98,7 +109,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
         lastRejectReason ? lastRejectReason : "",
         calFeedback,
         calSnapshotLen > 0 ? "true" : "false",
-        (int)goalSnapshotSeq, cdRemain);
+        (int)goalSnapshotSeq, cdRemain,
+        role, peer);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, buf, strlen(buf));
@@ -181,7 +193,19 @@ static esp_err_t reset_handler(httpd_req_t *req) {
     return httpd_resp_send(req, "{\"ok\":true}", 11);
 }
 
-static esp_err_t index_handler(httpd_req_t *req) {
+static esp_err_t mode_select_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    return httpd_resp_send(req, MODE_SELECT_HTML, strlen(MODE_SELECT_HTML));
+}
+
+static esp_err_t match_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    return httpd_resp_send(req, MATCH_DASHBOARD_HTML, strlen(MATCH_DASHBOARD_HTML));
+}
+
+static esp_err_t training_handler(httpd_req_t *req) {
     const char* html =
         "<!DOCTYPE html><html><head>"
         "<title>gol-cam</title>"
@@ -449,11 +473,13 @@ void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_uri_handlers = 14;
+    config.max_uri_handlers = 16;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {
-        httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler };
+        httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = mode_select_handler };
+        httpd_uri_t training_uri = { .uri = "/training", .method = HTTP_GET, .handler = training_handler };
+        httpd_uri_t match_uri = { .uri = "/match", .method = HTTP_GET, .handler = match_handler };
         httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = status_handler };
         httpd_uri_t cal_uri = { .uri = "/calibrate", .method = HTTP_GET, .handler = calibrate_handler };
         httpd_uri_t cal_snap_uri = { .uri = "/cal-snapshot", .method = HTTP_GET, .handler = cal_snapshot_handler };
@@ -465,6 +491,8 @@ void startCameraServer() {
         httpd_uri_t deduct_uri = { .uri = "/deduct", .method = HTTP_GET, .handler = deduct_handler };
         httpd_uri_t reset_uri = { .uri = "/reset", .method = HTTP_GET, .handler = reset_handler };
         httpd_register_uri_handler(server, &index_uri);
+        httpd_register_uri_handler(server, &training_uri);
+        httpd_register_uri_handler(server, &match_uri);
         httpd_register_uri_handler(server, &status_uri);
         httpd_register_uri_handler(server, &cal_uri);
         httpd_register_uri_handler(server, &cal_snap_uri);
