@@ -49,11 +49,14 @@ The sport continues to evolve, with active federations, regular tournaments, and
 
 ### Prerequisites
 
-- [Python 3](https://www.python.org/downloads/)
-- [PlatformIO Core (CLI)](https://platformio.org/install/cli)
+- [Git](https://git-scm.com/downloads)
+- [Python 3](https://www.python.org/downloads/) (check "Add to PATH" on Windows installer)
 - DFRobot DFR1154 board connected via USB-C
+- **Windows only:** [CP210x USB driver](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) (may be needed for serial communication)
 
 ### Step 1 — Clone the repo
+
+**Mac (Terminal) / Windows (PowerShell or Command Prompt):**
 
 ```bash
 git clone https://github.com/mpaiva/gol-cam.git
@@ -62,19 +65,54 @@ cd gol-cam
 
 ### Step 2 — Create a Python virtual environment
 
+**Mac (Terminal):**
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install platformio
 ```
 
+**Windows (PowerShell):**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install platformio
+```
+
+> If PowerShell blocks the script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` first.
+
+**Windows (Command Prompt):**
+
+```cmd
+python -m venv .venv
+.venv\Scripts\activate.bat
+pip install platformio
+```
+
 ### Step 3 — Set your WiFi credentials
 
-Create a `.env` file in the project root (this file is git-ignored):
+Create a `.env` file in the project root (this file is git-ignored).
+
+**Mac:**
 
 ```bash
 echo "WIFI_SSID=your-network-name" > .env
 echo "WIFI_PASSWORD=your-password" >> .env
+```
+
+**Windows (PowerShell):**
+
+```powershell
+"WIFI_SSID=your-network-name`nWIFI_PASSWORD=your-password" | Out-File -Encoding utf8 .env
+```
+
+**Or on any platform**, just create a file called `.env` in the project root with a text editor:
+
+```
+WIFI_SSID=your-network-name
+WIFI_PASSWORD=your-password
 ```
 
 **Optional — Static IP:** Add these lines to `.env` if you want a fixed address on your network:
@@ -99,6 +137,10 @@ Plug in the DFR1154 via USB-C, then:
 pio run -t upload
 ```
 
+> **Windows:** If the upload fails, check Device Manager to confirm the board appears as a COM port. You may need the CP210x driver linked above.
+
+> **Mac:** If you see a permission error, you may need to allow the USB device in **System Settings > Privacy & Security**.
+
 ### Step 6 — Find the IP address
 
 Open the serial monitor to see the board's IP:
@@ -117,7 +159,7 @@ Press `Ctrl+C` to exit the monitor.
 
 ### Step 7 — Open the dashboard
 
-Open the IP address from the serial monitor in your browser. From there you can:
+Open the IP address from the serial monitor in your browser. Your computer must be on the same WiFi network as the board. From there you can:
 
 1. **Calibrate** — Place the dadinho in the goal area and click "Calibrate"
 2. **Start Game** — Click "Start Game" to begin detection
