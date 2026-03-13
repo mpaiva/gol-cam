@@ -365,7 +365,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "function updateUI(st,cal){"
         "const playing=st===2,paused=st===3,inGame=playing||paused,idle=st===0;"
         // Game bar visibility
-        "$('game-bar').style.display=inGame?'':'none';"
+        "$('game-bar').style.display=inGame?'block':'none';"
         "$('btn-pause').style.display=playing?'':'none';"
         "$('btn-resume').style.display=paused?'':'none';"
         // Idle controls
@@ -392,7 +392,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
         // Countdown
         "if(d.cdRemain>0&&(d.state===2)){"
         "const sec=Math.ceil(d.cdRemain/1000);"
-        "$('countdown').style.display='';"
+        "$('countdown').style.display='block';"
         "$('cd-text').textContent='Detecting in '+sec+'s...';"
         "$('cd-fill').style.width=(d.cdRemain/100)+'%';"
         "}else{$('countdown').style.display='none';}"
