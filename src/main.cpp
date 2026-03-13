@@ -249,19 +249,18 @@ void loop() {
         return;
     }
 
-    // Convert to JPEG for web stream
-    uint8_t* jpg_buf = NULL;
-    size_t jpg_len = 0;
-    if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
-        frameStore.update(jpg_buf, jpg_len);
-        free(jpg_buf);
-    }
-
     uint16_t* pixels = (uint16_t*)fb->buf;
 
     // Handle calibration
     if (gameState == STATE_CALIBRATING) {
         doCalibration(pixels);
+        // Still convert to JPEG so stream doesn't stall
+        uint8_t* jpg_buf = NULL;
+        size_t jpg_len = 0;
+        if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
+            frameStore.update(jpg_buf, jpg_len);
+            free(jpg_buf);
+        }
         esp_camera_fb_return(fb);
         delay(10);
         return;
@@ -269,6 +268,12 @@ void loop() {
 
     // Detection only runs during gameplay
     if (gameState != STATE_PLAYING || calR < 0) {
+        uint8_t* jpg_buf = NULL;
+        size_t jpg_len = 0;
+        if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
+            frameStore.update(jpg_buf, jpg_len);
+            free(jpg_buf);
+        }
         esp_camera_fb_return(fb);
         detector.frameCount = frameNum;
         if (now - lastPrint >= 5000) {
@@ -307,8 +312,6 @@ void loop() {
         }
     }
 
-    esp_camera_fb_return(fb);
-
     int bboxW = (matchCount > 0) ? (maxX - minX + 1) : 0;
     int bboxH = (matchCount > 0) ? (maxY - minY + 1) : 0;
     float density = (bboxW > 0 && bboxH > 0) ? (float)matchCount / (bboxW * bboxH) : 0;
@@ -337,6 +340,46 @@ void loop() {
     else if ((int)matchCount < minPixels) lastRejectReason = "TOO-SMALL";
     else if (density < 0.12f) lastRejectReason = "SPARSE";
     else lastRejectReason = "REJECTED";
+
+    // Draw bounding box on the frame before JPEG conversion
+    if (matchCount > 0) {
+        // Green = DICE, Red = rejected
+        // RGB565 green: R=0 G=63 B=0 → 0x07E0, byte-swapped → 0xE007
+        // RGB565 red:   R=31 G=0 B=0 → 0xF800, byte-swapped → 0x00F8
+        uint16_t color = diceDetected ? 0xE007 : 0x00F8;
+
+        // Expand bbox by 2px padding for visibility
+        int x1 = max(0, minX - 2);
+        int y1 = max(0, minY - 2);
+        int x2 = min(DETECT_W - 1, maxX + 2);
+        int y2 = min(DETECT_H - 1, maxY + 2);
+
+        // Draw top and bottom edges
+        for (int x = x1; x <= x2; x++) {
+            pixels[y1 * DETECT_W + x] = color;
+            if (y1 + 1 < DETECT_H) pixels[(y1+1) * DETECT_W + x] = color;
+            pixels[y2 * DETECT_W + x] = color;
+            if (y2 - 1 >= 0) pixels[(y2-1) * DETECT_W + x] = color;
+        }
+        // Draw left and right edges
+        for (int y = y1; y <= y2; y++) {
+            pixels[y * DETECT_W + x1] = color;
+            if (x1 + 1 < DETECT_W) pixels[y * DETECT_W + x1 + 1] = color;
+            pixels[y * DETECT_W + x2] = color;
+            if (x2 - 1 >= 0) pixels[y * DETECT_W + x2 - 1] = color;
+        }
+    }
+
+    // NOW convert to JPEG (with rectangle drawn)
+    {
+        uint8_t* jpg_buf = NULL;
+        size_t jpg_len = 0;
+        if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
+            frameStore.update(jpg_buf, jpg_len);
+            free(jpg_buf);
+        }
+    }
+    esp_camera_fb_return(fb);
 
     detector.lastChangeRatio = (float)matchCount / (rw * rh);
     detector.frameCount = frameNum;
