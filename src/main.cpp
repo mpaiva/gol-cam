@@ -28,7 +28,7 @@ volatile bool goalJustScored = false;
 #define DETECT_H 240
 
 // Game states
-enum GameState { STATE_IDLE, STATE_CALIBRATING, STATE_PLAYING };
+enum GameState { STATE_IDLE, STATE_CALIBRATING, STATE_PLAYING, STATE_PAUSED };
 volatile GameState gameState = STATE_IDLE;
 
 // Calibrated color (set during calibration)
@@ -74,9 +74,34 @@ void requestStart() {
     }
 }
 
+void requestPause() {
+    if (gameState == STATE_PLAYING) {
+        gameState = STATE_PAUSED;
+        Serial.println("[game] Game paused");
+    }
+}
+
+void requestResume() {
+    if (gameState == STATE_PAUSED) {
+        gameState = STATE_PLAYING;
+        Serial.println("[game] Game resumed");
+    }
+}
+
 void requestStop() {
     gameState = STATE_IDLE;
     Serial.println("[game] Game stopped");
+}
+
+void requestReset() {
+    detector.goalCount = 0;
+    goalJustScored = false;
+    goalSnapshotSeq = 0;
+    goalSnapshotLen = 0;
+    if (gameState == STATE_PLAYING || gameState == STATE_PAUSED) {
+        gameState = STATE_PLAYING;
+    }
+    Serial.println("[game] Score reset to 0");
 }
 
 void setup() {
@@ -342,8 +367,8 @@ void loop() {
         return;
     }
 
-    // Detection only runs during gameplay
-    if (gameState != STATE_PLAYING || calR < 0) {
+    // Detection only runs during active gameplay
+    if ((gameState != STATE_PLAYING) || calR < 0) {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
         if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
