@@ -86,65 +86,73 @@ display:none;flex-direction:column;justify-content:center;align-items:center;z-i
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
 .btn-anula{background:#c00;color:#fff;padding:14px 30px;font-size:1.2em;
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
+.lang-picker{position:fixed;top:8px;right:8px;display:flex;gap:4px;z-index:200}
+.lang-btn{padding:4px 8px;font-size:0.75em;border:1px solid #555;border-radius:4px;
+background:#222;color:#aaa;cursor:pointer;font-weight:bold}
+.lang-btn.active{background:#0f0;color:#000;border-color:#0f0}
 </style></head><body>
+<div class='lang-picker'>
+<button class='lang-btn' onclick="setLang('en')">EN</button>
+<button class='lang-btn' onclick="setLang('pt')">PT</button>
+</div>
 <div id='gol-flash'></div>
-<div id='gol-text'>GOOOL!</div>
+<div id='gol-text' data-i18n='goal.flash'>GOOOL!</div>
 <div id='lightbox'>
 <div id='lb-title'></div>
 <img id='lb-img'/>
 <div id='lb-buttons'>
-<button class='btn-foi' id='btn-lb-foi'>Foi Gol</button>
-<button class='btn-anula' id='btn-lb-anula'>Anula</button>
+<button class='btn-foi' id='btn-lb-foi' data-i18n='var.confirm'>Foi Gol</button>
+<button class='btn-anula' id='btn-lb-anula' data-i18n='var.annul'>Anula</button>
 </div>
 </div>
 
-<h1>gol-cam MATCH</h1>
-<a href='/'>&#8592; Menu</a>
+<h1 data-i18n='match.title'>gol-cam MATCH</h1>
+<a href='/' data-i18n='nav.menu'>&#8592; Menu</a>
 
 <!-- Config panel -->
 <div id='config'>
-<h2>Board IPs</h2>
+<h2 data-i18n='match.board_ips'>Board IPs</h2>
 <div class='cfg-row'>
-<label>Home:</label><input id='ip-home' placeholder='192.168.x.x'>
+<label data-i18n='match.home'>Home:</label><input id='ip-home' placeholder='192.168.x.x'>
 </div>
 <div class='cfg-row'>
-<label>Away:</label><input id='ip-away' placeholder='192.168.x.x'>
+<label data-i18n='match.away'>Away:</label><input id='ip-away' placeholder='192.168.x.x'>
 </div>
 <div class='cfg-row'>
-<button class='btn btn-go' id='btn-connect' onclick='connect()'>Connect</button>
+<button class='btn btn-go' id='btn-connect' onclick='connect()' data-i18n='match.connect'>Connect</button>
 </div>
 <div id='cfg-msg' style='color:#888;font-size:0.85em;margin-top:8px'></div>
 </div>
 
 <!-- Scoreboard -->
 <div id='scoreboard'>
-<div class='team-label'>HOME</div>
+<div class='team-label' id='lbl-home' data-i18n='match.home_label'>HOME</div>
 <div id='score-line'><span id='score-home'>0</span><span class='x'>x</span><span id='score-away'>0</span></div>
-<div class='team-label'>AWAY</div>
+<div class='team-label' id='lbl-away' data-i18n='match.away_label'>AWAY</div>
 </div>
 
 <!-- Camera feeds -->
 <div id='feeds' style='display:none'>
 <div class='feed-box'>
-<div class='feed-label'>Home Goal <span id='st-home' class='feed-status st-idle'>...</span></div>
+<div class='feed-label'><span data-i18n='match.home_goal'>Home Goal</span> <span id='st-home' class='feed-status st-idle'>...</span></div>
 <img id='cam-home'/>
-<div class='ctrl-row'><button class='btn btn-cal' onclick='calibrate("home")'>Calibrate Home</button></div>
+<div class='ctrl-row'><button class='btn btn-cal' onclick='calibrate("home")' data-i18n='match.cal_home'>Calibrate Home</button></div>
 </div>
 <div class='feed-box'>
-<div class='feed-label'>Away Goal <span id='st-away' class='feed-status st-idle'>...</span></div>
+<div class='feed-label'><span data-i18n='match.away_goal'>Away Goal</span> <span id='st-away' class='feed-status st-idle'>...</span></div>
 <img id='cam-away'/>
-<div class='ctrl-row'><button class='btn btn-cal' onclick='calibrate("away")'>Calibrate Away</button></div>
+<div class='ctrl-row'><button class='btn btn-cal' onclick='calibrate("away")' data-i18n='match.cal_away'>Calibrate Away</button></div>
 </div>
 </div>
 
 <!-- Match controls -->
 <div id='controls'>
 <div class='ctrl-row'>
-<button class='btn btn-start' id='btn-start' onclick='matchCmd("start")'>Start Match</button>
-<button class='btn btn-pause' id='btn-pause' onclick='matchCmd("pause")' style='display:none'>Pause</button>
-<button class='btn btn-resume' id='btn-resume' onclick='matchCmd("resume")' style='display:none'>Resume</button>
-<button class='btn btn-reset' id='btn-reset' onclick='matchReset()'>Reset</button>
-<button class='btn btn-end' id='btn-stop' onclick='matchCmd("stop")' style='display:none'>End Match</button>
+<button class='btn btn-start' id='btn-start' onclick='matchCmd("start")' data-i18n='match.start'>Start Match</button>
+<button class='btn btn-pause' id='btn-pause' onclick='matchCmd("pause")' style='display:none' data-i18n='match.pause'>Pause</button>
+<button class='btn btn-resume' id='btn-resume' onclick='matchCmd("resume")' style='display:none' data-i18n='match.resume'>Resume</button>
+<button class='btn btn-reset' id='btn-reset' onclick='matchReset()' data-i18n='match.reset'>Reset</button>
+<button class='btn btn-end' id='btn-stop' onclick='matchCmd("stop")' style='display:none' data-i18n='match.end'>End Match</button>
 </div>
 </div>
 
@@ -152,6 +160,96 @@ border:none;border-radius:10px;cursor:pointer;font-weight:bold}
 <div id='gol-log'></div>
 
 <script>
+var I18N={
+en:{
+'nav.menu':'\u2190 Menu',
+'goal.flash':'GOOOL!',
+'var.title':'VAR - Video Review',
+'var.confirm':'Foi Gol',
+'var.annul':'Annul',
+'var.annulled':'ANNULLED',
+'match.title':'gol-cam MATCH',
+'match.board_ips':'Board IPs',
+'match.home':'Home:',
+'match.away':'Away:',
+'match.connect':'Connect',
+'match.enter_both':'Enter both IPs',
+'match.home_label':'HOME',
+'match.away_label':'AWAY',
+'match.home_goal':'Home Goal',
+'match.away_goal':'Away Goal',
+'match.cal_home':'Calibrate Home',
+'match.cal_away':'Calibrate Away',
+'match.start':'Start Match',
+'match.pause':'Pause',
+'match.resume':'Resume',
+'match.reset':'Reset',
+'match.end':'End Match',
+'match.offline':'OFFLINE',
+'match.ready':'READY',
+'match.idle':'IDLE',
+'match.cal':'CAL...',
+'match.playing':'PLAYING',
+'match.paused':'PAUSED',
+'match.goal_num':'GOL #%d (%s)',
+'match.scorer_home':'HOME',
+'match.scorer_away':'AWAY'
+},
+pt:{
+'nav.menu':'\u2190 Menu',
+'goal.flash':'GOOOL!',
+'var.title':'VAR - Revis\u00e3o',
+'var.confirm':'Foi Gol',
+'var.annul':'Anula',
+'var.annulled':'ANULADO',
+'match.title':'gol-cam JOGO',
+'match.board_ips':'IPs das Placas',
+'match.home':'Casa:',
+'match.away':'Fora:',
+'match.connect':'Conectar',
+'match.enter_both':'Digite ambos os IPs',
+'match.home_label':'CASA',
+'match.away_label':'FORA',
+'match.home_goal':'Gol Casa',
+'match.away_goal':'Gol Fora',
+'match.cal_home':'Calibrar Casa',
+'match.cal_away':'Calibrar Fora',
+'match.start':'Iniciar Partida',
+'match.pause':'Pausar',
+'match.resume':'Continuar',
+'match.reset':'Reiniciar',
+'match.end':'Encerrar',
+'match.offline':'OFFLINE',
+'match.ready':'PRONTO',
+'match.idle':'AGUARDANDO',
+'match.cal':'CAL...',
+'match.playing':'JOGANDO',
+'match.paused':'PAUSADO',
+'match.goal_num':'GOL #%d (%s)',
+'match.scorer_home':'CASA',
+'match.scorer_away':'FORA'
+}
+};
+var curLang='en';
+function t(key){
+var s=(I18N[curLang]&&I18N[curLang][key])||I18N.en[key]||key;
+var args=Array.prototype.slice.call(arguments,1);var i=0;
+s=s.replace(/%[ds]/g,function(){return i<args.length?args[i++]:'';});
+return s;
+}
+function setLang(lang){
+curLang=lang;localStorage.setItem('gol-lang',lang);
+document.querySelectorAll('[data-i18n]').forEach(function(el){
+el.textContent=t(el.getAttribute('data-i18n'));});
+document.querySelectorAll('.lang-btn').forEach(function(b){
+b.classList.toggle('active',b.textContent.toLowerCase()===lang);});
+}
+(function(){
+var saved=localStorage.getItem('gol-lang');
+if(saved){curLang=saved;}
+else{var nav=navigator.language||'';curLang=nav.startsWith('pt')?'pt':'en';}
+})();
+
 const $=id=>document.getElementById(id);
 let boards={home:{ip:'',online:false,goals:0,goalSeq:0,state:-1,calibrated:false},
             away:{ip:'',online:false,goals:0,goalSeq:0,state:-1,calibrated:false}};
@@ -183,7 +281,7 @@ try{
 
 function connect(){
   const h=$('ip-home').value.trim(),a=$('ip-away').value.trim();
-  if(!h||!a){$('cfg-msg').textContent='Enter both IPs';return;}
+  if(!h||!a){$('cfg-msg').textContent=t('match.enter_both');return;}
   boards.home.ip=h;boards.away.ip=a;
   localStorage.setItem('gol-match',JSON.stringify({home:h,away:a}));
   $('config').style.display='none';
@@ -224,13 +322,13 @@ async function pollBoard(side){
     }
     // Update status indicator
     const el=$('st-'+side);
-    if(d.state===2){el.textContent='PLAYING';el.className='feed-status st-online';}
-    else if(d.state===3){el.textContent='PAUSED';el.className='feed-status st-online';}
-    else if(d.state===0){el.textContent=d.calibrated?'READY':'IDLE';el.className='feed-status st-idle';}
-    else{el.textContent='CAL...';el.className='feed-status st-idle';}
+    if(d.state===2){el.textContent=t('match.playing');el.className='feed-status st-online';}
+    else if(d.state===3){el.textContent=t('match.paused');el.className='feed-status st-online';}
+    else if(d.state===0){el.textContent=d.calibrated?t('match.ready'):t('match.idle');el.className='feed-status st-idle';}
+    else{el.textContent=t('match.cal');el.className='feed-status st-idle';}
   }catch(e){
     b.online=false;
-    $('st-'+side).textContent='OFFLINE';
+    $('st-'+side).textContent=t('match.offline');
     $('st-'+side).className='feed-status st-offline';
   }
 }
@@ -263,7 +361,8 @@ function flashGoal(side){
 function addGoalEntry(side,goalNum,ip){
   const glog=$('gol-log');
   // Which team scored? Camera at home goal detects away team scoring, and vice versa
-  const scorer=side==='home'?'AWAY':'HOME';
+  const scorerKey=side==='home'?'match.scorer_away':'match.scorer_home';
+  const scorer=t(scorerKey);
   const totalHome=boards.away.goals,totalAway=boards.home.goals;
   const snapUrl='http://'+ip+'/goal-snapshot?t='+Date.now();
 
@@ -272,7 +371,7 @@ function addGoalEntry(side,goalNum,ip){
   const img=document.createElement('img');img.src=snapUrl;
   const info=document.createElement('div');info.className='gol-info';
   const num=document.createElement('div');num.className='gol-num';
-  num.textContent='GOL #'+goalNum+' ('+scorer+')';
+  num.textContent=t('match.goal_num',goalNum,scorer);
   const sd=document.createElement('div');sd.className='gol-side';
   sd.textContent=totalHome+' x '+totalAway;
   const tm=document.createElement('div');tm.className='gol-time';
@@ -298,7 +397,7 @@ function showLightbox(src){
 
 function showVAR(src,entry,btn,side){
   varEntry=entry;varBtn=btn;varSide=side;
-  $('lb-img').src=src;$('lb-title').textContent='VAR - Video Review';
+  $('lb-img').src=src;$('lb-title').textContent=t('var.title');
   $('lb-buttons').style.display='flex';
   $('lightbox').style.display='flex';
   $('lightbox').onclick=null;
@@ -310,7 +409,7 @@ $('btn-lb-anula').onclick=function(){
   const ip=boards[varSide].ip;
   fetch('http://'+ip+'/deduct').then(()=>{
     varEntry.classList.add('gol-annulled');
-    if(varBtn){varBtn.textContent='ANULADO';varBtn.disabled=true;
+    if(varBtn){varBtn.textContent=t('var.annulled');varBtn.disabled=true;
     varBtn.style.background='#555';}
   });
   $('lightbox').style.display='none';
@@ -339,6 +438,8 @@ function matchReset(){
   $('score-home').textContent='0';$('score-away').textContent='0';
   $('gol-log').innerHTML='';
 }
+
+document.addEventListener('DOMContentLoaded',function(){setLang(curLang);});
 </script>
 </body></html>
 )rawliteral";
