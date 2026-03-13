@@ -390,6 +390,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "}catch(e){$('info').textContent='disconnected';}},500);"
         "</script></body></html>";
     httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     return httpd_resp_send(req, html, strlen(html));
 }
 
