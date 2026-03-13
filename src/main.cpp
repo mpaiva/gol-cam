@@ -30,9 +30,10 @@ volatile bool goalJustScored = false;
 
 // Yellow color thresholds in RGB565
 // RGB565: RRRRRGGG GGGBBBBB (R=5bit, G=6bit, B=5bit)
-#define YELLOW_R_MIN 18   // out of 31 — high red
-#define YELLOW_G_MIN 30   // out of 63 — high green
-#define YELLOW_B_MAX 14   // out of 31 — low blue
+// Tuned to match bright yellow dadinho, reject skin tones
+#define YELLOW_R_MIN 24   // out of 31 (~197 in 8-bit) — very high red
+#define YELLOW_G_MIN 42   // out of 63 (~170 in 8-bit) — very high green
+#define YELLOW_B_MAX 10   // out of 31 (~82 in 8-bit) — low blue (skin has B>80)
 
 // How many yellow pixels to trigger a goal
 #define YELLOW_PIXEL_MIN 15       // minimum yellow pixels to count as "dice present"
@@ -158,7 +159,9 @@ void loop() {
             uint8_t g = (px >> 5) & 0x3F;   // 0-63
             uint8_t b = px & 0x1F;           // 0-31
 
-            if (r >= YELLOW_R_MIN && g >= YELLOW_G_MIN && b <= YELLOW_B_MAX) {
+            // Yellow: high R, high G, very low B, and R+G >> B
+            if (r >= YELLOW_R_MIN && g >= YELLOW_G_MIN && b <= YELLOW_B_MAX
+                && (r + (g >> 1)) > (b * 4)) {  // saturation check
                 yellowCount++;
             }
         }
