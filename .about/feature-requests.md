@@ -32,3 +32,22 @@
 - [ ] Score increments correctly on goal
 - [ ] Score is visible to players
 - [ ] Reset mechanism available
+
+## F4: Two-Camera Match Mode
+**Status:** Implemented (untested on hardware)
+**Description:** Two boards (one per goal) with a unified match dashboard that aggregates both feeds into a single scoreboard.
+**Requirements:**
+- Mode selection page at `/` (Treino vs Jogo)
+- Match dashboard at `/match` polls both boards' `/status` endpoints
+- Browser acts as aggregator (no inter-board communication needed)
+- CORS headers already present on all endpoints
+- Configurable board IPs with localStorage persistence
+- Auto-detection via `/status` role/peer fields
+**Acceptance Criteria:**
+- [ ] Mode selector page shows two options at `/`
+- [ ] Training mode at `/training` works identically to previous `/`
+- [ ] Match dashboard shows two camera feeds side by side
+- [ ] Scoreboard updates correctly when either board detects a goal
+- [ ] Unified controls (start/pause/resume/reset/stop) reach both boards
+- [ ] VAR review fetches snapshot from correct board and deducts from correct side
+- [ ] Dashboard remains functional when one board goes offline
