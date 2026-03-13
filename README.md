@@ -45,21 +45,85 @@ The sport continues to evolve, with active federations, regular tournaments, and
 - **DFRobot DFR1154** — ESP32-S3 with OV3660 camera, 16MB flash, 8MB PSRAM
 - Standard micro USB-C for power and programming
 
-## Building
+## Getting Started
 
-Requires [PlatformIO](https://platformio.org/).
+### Prerequisites
+
+- [Python 3](https://www.python.org/downloads/)
+- [PlatformIO Core (CLI)](https://platformio.org/install/cli)
+- DFRobot DFR1154 board connected via USB-C
+
+### Step 1 — Clone the repo
 
 ```bash
-# Create .env with your WiFi credentials
-echo "WIFI_SSID=your-network" > .env
+git clone https://github.com/mpaiva/gol-cam.git
+cd gol-cam
+```
+
+### Step 2 — Create a Python virtual environment
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install platformio
+```
+
+### Step 3 — Set your WiFi credentials
+
+Create a `.env` file in the project root (this file is git-ignored):
+
+```bash
+echo "WIFI_SSID=your-network-name" > .env
 echo "WIFI_PASSWORD=your-password" >> .env
+```
 
-# Build and upload
+**Optional — Static IP:** Add these lines to `.env` if you want a fixed address on your network:
+
+```
+WIFI_STATIC_IP=192.168.0.100
+WIFI_GATEWAY=192.168.0.1
+WIFI_SUBNET=255.255.255.0
+```
+
+### Step 4 — Build the firmware
+
+```bash
+pio run
+```
+
+### Step 5 — Upload to the board
+
+Plug in the DFR1154 via USB-C, then:
+
+```bash
 pio run -t upload
+```
 
-# Monitor serial output
+### Step 6 — Find the IP address
+
+Open the serial monitor to see the board's IP:
+
+```bash
 pio device monitor
 ```
+
+Look for the line:
+
+```
+Dashboard: http://192.168.x.x
+```
+
+Press `Ctrl+C` to exit the monitor.
+
+### Step 7 — Open the dashboard
+
+Open the IP address from the serial monitor in your browser. From there you can:
+
+1. **Calibrate** — Place the dadinho in the goal area and click "Calibrate"
+2. **Start Game** — Click "Start Game" to begin detection
+3. **Play** — The system detects goals automatically, captures snapshots, and keeps score
+4. **VAR Review** — Click "VAR" on any goal to review and confirm or annul it
+5. **Game Controls** — Pause, resume, reset, or end the game at any time
 
 ## License
 
