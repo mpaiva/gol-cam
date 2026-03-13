@@ -106,10 +106,8 @@ void requestReset() {
     goalJustScored = false;
     goalSnapshotSeq = 0;
     goalSnapshotLen = 0;
-    if (gameState == STATE_PLAYING || gameState == STATE_PAUSED) {
-        gameState = STATE_PLAYING;
-    }
-    Serial.println("[game] Score reset to 0");
+    gameState = STATE_IDLE;
+    Serial.println("[game] Reset — back to calibration");
 }
 
 void setup() {

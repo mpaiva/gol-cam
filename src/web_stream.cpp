@@ -360,7 +360,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "async function resumeGame(){await fetch('/resume');}"
         "async function stopGame(){await fetch('/stop');}"
         "async function resetGame(){await fetch('/reset');"
-        "glog.innerHTML='';lastGolSeq=0;}"
+        "glog.innerHTML='';lastGolSeq=0;lastState=-1;}"
 
         "function updateUI(st,cal){"
         "const playing=st===2,paused=st===3,inGame=playing||paused,idle=st===0;"
