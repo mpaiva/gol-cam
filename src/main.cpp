@@ -38,7 +38,7 @@ volatile int calPixelCount = 0;  // how many pixels the dice was during calibrat
 volatile int calBboxW = 0, calBboxH = 0;
 
 // Detection params
-#define COOLDOWN_MS 3000
+#define COOLDOWN_MS 10000
 #define STABLE_FRAMES_NEEDED 3
 
 // Shared detection state for web console
@@ -52,6 +52,12 @@ uint8_t* calSnapshotBuf = nullptr;
 size_t calSnapshotLen = 0;
 SemaphoreHandle_t calSnapshotMutex = nullptr;
 char calFeedback[256] = "";  // calibration feedback message
+
+// Goal snapshot: JPEG of the frame when a goal was scored
+uint8_t* goalSnapshotBuf = nullptr;
+size_t goalSnapshotLen = 0;
+SemaphoreHandle_t goalSnapshotMutex = nullptr;
+volatile uint32_t goalSnapshotSeq = 0;  // increments each goal, so browser knows when new one is ready
 
 // Called from HTTP handler to trigger calibration
 void requestCalibration() {
@@ -90,6 +96,12 @@ void setup() {
     calSnapshotMutex = xSemaphoreCreateMutex();
     if (!calSnapshotBuf || !calSnapshotMutex) {
         Serial.println("WARN: cal snapshot alloc failed");
+    }
+
+    goalSnapshotBuf = (uint8_t*)ps_malloc(64 * 1024);
+    goalSnapshotMutex = xSemaphoreCreateMutex();
+    if (!goalSnapshotBuf || !goalSnapshotMutex) {
+        Serial.println("WARN: goal snapshot alloc failed");
     }
 
     if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_RGB565)) {
@@ -434,20 +446,32 @@ void loop() {
         }
     }
 
-    // NOW convert to JPEG (with rectangle drawn)
+    // Check goal BEFORE converting to JPEG, so we can save the goal snapshot
+    detector.lastChangeRatio = (float)matchCount / (rw * rh);
+    detector.frameCount = frameNum;
+    bool inCooldown = (now - lastGoalTime) < COOLDOWN_MS;
+    bool isGoal = diceDetected && !diceWasPresent && !inCooldown && noDiceFrames > STABLE_FRAMES_NEEDED;
+
+    // Convert to JPEG (with rectangle drawn)
     {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
         if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
             frameStore.update(jpg_buf, jpg_len);
+            // Save goal snapshot
+            if (isGoal && goalSnapshotBuf && goalSnapshotMutex) {
+                xSemaphoreTake(goalSnapshotMutex, portMAX_DELAY);
+                if (jpg_len <= 64 * 1024) {
+                    memcpy(goalSnapshotBuf, jpg_buf, jpg_len);
+                    goalSnapshotLen = jpg_len;
+                    goalSnapshotSeq++;
+                }
+                xSemaphoreGive(goalSnapshotMutex);
+            }
             free(jpg_buf);
         }
     }
     esp_camera_fb_return(fb);
-
-    detector.lastChangeRatio = (float)matchCount / (rw * rh);
-    detector.frameCount = frameNum;
-    bool inCooldown = (now - lastGoalTime) < COOLDOWN_MS;
 
     static uint32_t lastDetectLog = 0;
     if (matchCount > 0 && (now - lastDetectLog >= 500)) {
@@ -468,7 +492,7 @@ void loop() {
     }
 
     // Goal: dice appears after being absent
-    if (diceDetected && !diceWasPresent && !inCooldown && noDiceFrames > STABLE_FRAMES_NEEDED) {
+    if (isGoal) {
         lastGoalTime = now;
         detector.goalCount++;
         goalJustScored = true;

@@ -25,6 +25,12 @@ extern size_t calSnapshotLen;
 extern SemaphoreHandle_t calSnapshotMutex;
 extern char calFeedback[];
 
+// Goal snapshot (defined in main.cpp)
+extern uint8_t* goalSnapshotBuf;
+extern size_t goalSnapshotLen;
+extern SemaphoreHandle_t goalSnapshotMutex;
+extern volatile uint32_t goalSnapshotSeq;
+
 // Actions (defined in main.cpp)
 extern void requestCalibration();
 extern void requestStart();
@@ -73,7 +79,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"calPx\":%d,\"calW\":%d,\"calH\":%d,"
         "\"matchPx\":%d,\"bboxW\":%d,\"bboxH\":%d,\"density\":%.0f,"
         "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\","
-        "\"calMsg\":\"%s\",\"hasSnap\":%s}",
+        "\"calMsg\":\"%s\",\"hasSnap\":%s,\"goalSeq\":%d}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
         (int)gameState, calR >= 0 ? "true" : "false",
@@ -83,7 +89,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
         (int)lastMinPx, (int)lastMaxPx, (int)lastMaxBbox,
         lastRejectReason ? lastRejectReason : "",
         calFeedback,
-        calSnapshotLen > 0 ? "true" : "false");
+        calSnapshotLen > 0 ? "true" : "false",
+        (int)goalSnapshotSeq);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, buf, strlen(buf));
@@ -100,6 +107,20 @@ static esp_err_t cal_snapshot_handler(httpd_req_t *req) {
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     esp_err_t res = httpd_resp_send(req, (const char*)calSnapshotBuf, calSnapshotLen);
     xSemaphoreGive(calSnapshotMutex);
+    return res;
+}
+
+static esp_err_t goal_snapshot_handler(httpd_req_t *req) {
+    if (!goalSnapshotBuf || !goalSnapshotMutex || goalSnapshotLen == 0) {
+        httpd_resp_send_404(req);
+        return ESP_OK;
+    }
+    xSemaphoreTake(goalSnapshotMutex, portMAX_DELAY);
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    esp_err_t res = httpd_resp_send(req, (const char*)goalSnapshotBuf, goalSnapshotLen);
+    xSemaphoreGive(goalSnapshotMutex);
     return res;
 }
 
@@ -154,6 +175,13 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "#cal-feedback{color:#fff;font-size:0.85em;margin:5px;padding:8px 12px;"
         "background:#222;border-radius:6px;display:none;max-width:400px;text-align:center}"
         ".cal-ok{border-left:3px solid #0f0}.cal-fail{border-left:3px solid #f44}"
+        "#goal-log{width:100%;max-width:400px;margin:10px 0}"
+        ".goal-entry{background:#1a1a1a;border:1px solid #333;border-radius:8px;"
+        "margin:8px 0;padding:10px;display:flex;gap:10px;align-items:center}"
+        ".goal-entry img{width:120px;border-radius:4px;border:2px solid #0f0}"
+        ".goal-entry .goal-info{flex:1;font-size:0.85em}"
+        ".goal-entry .goal-num{color:#0f0;font-size:1.4em;font-weight:bold}"
+        ".goal-entry .goal-time{color:#888;font-size:0.75em}"
         "#console{width:100%;max-width:400px;height:180px;background:#0a0a0a;"
         "border:1px solid #333;border-radius:6px;margin:10px 0;padding:8px;"
         "font-family:monospace;font-size:0.7em;color:#0f0;overflow-y:auto;"
@@ -180,12 +208,13 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "<img id='cal-snap'/>"
         "<div id='cal-info'></div>"
         "<div id='info'>Place the dadinho in view, then press Calibrate</div>"
+        "<div id='goal-log'></div>"
         "<div id='console'></div>"
         "<script>"
         "document.getElementById('cam').src='http://'+location.hostname+':81/stream';"
         "const $=id=>document.getElementById(id);"
-        "let lastState=-1;"
-        "const con=$('console');"
+        "let lastState=-1,lastGoalSeq=0;"
+        "const con=$('console'),glog=$('goal-log');"
         "function log(msg,cls){"
         "const d=document.createElement('div');"
         "if(cls)d.className=cls;"
@@ -214,7 +243,8 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "$('btn-cal').disabled=false;},1500);}"
 
         "async function startGame(){await fetch('/start');"
-        "$('cal-snap').style.display='none';$('cal-feedback').style.display='none';}"
+        "$('cal-snap').style.display='none';$('cal-feedback').style.display='none';"
+        "glog.innerHTML='';lastGoalSeq=0;}"
         "async function stopGame(){await fetch('/stop');}"
 
         "setInterval(async()=>{"
@@ -250,11 +280,23 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "const cls=d.reject==='DICE'?'log-dice':'log-reject';"
         "log(d.reject+': '+d.matchPx+'px bbox='+d.bboxW+'x'+d.bboxH+"
         "' dens='+d.density+'% (lim:'+d.minPx+'-'+d.maxPx+' bbox<='+d.maxBbox+')',cls);}"
-        // Goal flash
-        "if(d.scored){"
+        // Goal flash + snapshot log
+        "if(d.scored&&d.goalSeq>lastGoalSeq){"
+        "lastGoalSeq=d.goalSeq;"
         "$('goal-flash').classList.add('active');$('goal-text').classList.add('active');"
         "setTimeout(()=>{$('goal-flash').classList.remove('active');"
-        "$('goal-text').classList.remove('active')},2000);}"
+        "$('goal-text').classList.remove('active')},2000);"
+        "const e=document.createElement('div');e.className='goal-entry';"
+        "const img=document.createElement('img');"
+        "img.src='/goal-snapshot?t='+Date.now();"
+        "const info=document.createElement('div');info.className='goal-info';"
+        "const num=document.createElement('div');num.className='goal-num';"
+        "num.textContent='GOAL #'+d.goals;"
+        "const tm=document.createElement('div');tm.className='goal-time';"
+        "tm.textContent=new Date().toLocaleTimeString();"
+        "info.appendChild(num);info.appendChild(tm);"
+        "e.appendChild(img);e.appendChild(info);"
+        "glog.insertBefore(e,glog.firstChild);}"
         "}catch(e){$('info').textContent='disconnected';}},500);"
         "</script></body></html>";
     httpd_resp_set_type(req, "text/html");
@@ -273,12 +315,14 @@ void startCameraServer() {
         httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = status_handler };
         httpd_uri_t cal_uri = { .uri = "/calibrate", .method = HTTP_GET, .handler = calibrate_handler };
         httpd_uri_t cal_snap_uri = { .uri = "/cal-snapshot", .method = HTTP_GET, .handler = cal_snapshot_handler };
+        httpd_uri_t goal_snap_uri = { .uri = "/goal-snapshot", .method = HTTP_GET, .handler = goal_snapshot_handler };
         httpd_uri_t start_uri = { .uri = "/start", .method = HTTP_GET, .handler = start_handler };
         httpd_uri_t stop_uri = { .uri = "/stop", .method = HTTP_GET, .handler = stop_handler };
         httpd_register_uri_handler(server, &index_uri);
         httpd_register_uri_handler(server, &status_uri);
         httpd_register_uri_handler(server, &cal_uri);
         httpd_register_uri_handler(server, &cal_snap_uri);
+        httpd_register_uri_handler(server, &goal_snap_uri);
         httpd_register_uri_handler(server, &start_uri);
         httpd_register_uri_handler(server, &stop_uri);
         Serial.println("Web server started on port 80");
