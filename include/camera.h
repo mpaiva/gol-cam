@@ -31,7 +31,7 @@ bool initCamera(framesize_t frameSize = FRAMESIZE_QVGA,
     config.grab_mode = CAMERA_GRAB_LATEST;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.jpeg_quality = 12;
-    config.fb_count = 3;  // 3 buffers to reduce contention between detection + stream
+    config.fb_count = 2;
 
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {

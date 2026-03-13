@@ -1,16 +1,17 @@
 // =============================================================
-// MJPEG streaming server — works with grayscale camera frames
+// MJPEG streaming server — reads JPEG from FrameStore
+// (main loop is the only camera consumer)
 // =============================================================
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include "esp_http_server.h"
-#include "esp_camera.h"
-#include "img_converters.h"
 #include "pins.h"
 #include "goal_detector.h"
+#include "frame_store.h"
 
 extern GoalDetector detector;
+extern FrameStore frameStore;
 extern volatile bool goalJustScored;
 
 #define PART_BOUNDARY "123456789000000000000987654321"
@@ -22,73 +23,61 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     esp_err_t res = ESP_OK;
     char part_buf[64];
 
-    res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
-    if (res != ESP_OK) return res;
-
-    while (true) {
-        camera_fb_t *fb = esp_camera_fb_get();
-        if (!fb) {
-            Serial.println("Stream: capture failed");
-            res = ESP_FAIL;
-            break;
-        }
-
-        // If frame is already JPEG, send directly
-        if (fb->format == PIXFORMAT_JPEG) {
-            size_t hlen = snprintf(part_buf, 64, STREAM_PART, fb->len);
-            res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
-            if (res == ESP_OK) res = httpd_resp_send_chunk(req, part_buf, hlen);
-            if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)fb->buf, fb->len);
-        } else {
-            // Convert grayscale to JPEG
-            uint8_t *jpg_buf = NULL;
-            size_t jpg_len = 0;
-            bool ok = frame2jpg(fb, 80, &jpg_buf, &jpg_len);
-            if (ok && jpg_buf) {
-                size_t hlen = snprintf(part_buf, 64, STREAM_PART, jpg_len);
-                res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
-                if (res == ESP_OK) res = httpd_resp_send_chunk(req, part_buf, hlen);
-                if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)jpg_buf, jpg_len);
-                free(jpg_buf);
-            } else {
-                Serial.println("Stream: JPEG conversion failed");
-                res = ESP_FAIL;
-            }
-        }
-
-        esp_camera_fb_return(fb);
-        if (res != ESP_OK) break;
-    }
-    return res;
-}
-
-static esp_err_t capture_handler(httpd_req_t *req) {
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) {
+    // Allocate a read buffer in PSRAM
+    uint8_t* jpg_buf = (uint8_t*)ps_malloc(64 * 1024);
+    if (!jpg_buf) {
         httpd_resp_send_500(req);
         return ESP_FAIL;
     }
 
-    esp_err_t res;
-    if (fb->format == PIXFORMAT_JPEG) {
-        httpd_resp_set_type(req, "image/jpeg");
-        httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-        res = httpd_resp_send(req, (const char *)fb->buf, fb->len);
-    } else {
-        uint8_t *jpg_buf = NULL;
-        size_t jpg_len = 0;
-        if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
-            httpd_resp_set_type(req, "image/jpeg");
-            httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-            res = httpd_resp_send(req, (const char *)jpg_buf, jpg_len);
-            free(jpg_buf);
-        } else {
-            httpd_resp_send_500(req);
-            res = ESP_FAIL;
+    res = httpd_resp_set_type(req, STREAM_CONTENT_TYPE);
+    if (res != ESP_OK) { free(jpg_buf); return res; }
+
+    uint32_t lastSeq = 0;
+    while (true) {
+        // Wait for a new frame (don't send duplicates)
+        uint32_t seq = frameStore.seq();
+        if (seq == lastSeq) {
+            delay(10);
+            continue;
         }
+
+        size_t jpg_len = frameStore.get(jpg_buf, 64 * 1024, &lastSeq);
+        if (jpg_len == 0) {
+            delay(10);
+            continue;
+        }
+
+        size_t hlen = snprintf(part_buf, 64, STREAM_PART, jpg_len);
+        res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
+        if (res == ESP_OK) res = httpd_resp_send_chunk(req, part_buf, hlen);
+        if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)jpg_buf, jpg_len);
+
+        if (res != ESP_OK) break;
     }
 
-    esp_camera_fb_return(fb);
+    free(jpg_buf);
+    return res;
+}
+
+static esp_err_t capture_handler(httpd_req_t *req) {
+    uint8_t* jpg_buf = (uint8_t*)ps_malloc(64 * 1024);
+    if (!jpg_buf) {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    size_t jpg_len = frameStore.get(jpg_buf, 64 * 1024);
+    if (jpg_len == 0) {
+        free(jpg_buf);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    esp_err_t res = httpd_resp_send(req, (const char *)jpg_buf, jpg_len);
+    free(jpg_buf);
     return res;
 }
 
@@ -153,8 +142,7 @@ void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.stack_size = 8192;       // larger stack for frame2jpg
-    config.max_open_sockets = 4;    // index + stream + status + spare
+    config.stack_size = 8192;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {

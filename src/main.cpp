@@ -6,9 +6,11 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include "esp_camera.h"
+#include "img_converters.h"
 #include "camera.h"
 #include "pins.h"
 #include "goal_detector.h"
+#include "frame_store.h"
 
 // --- WiFi credentials ---
 const char* WIFI_SSID     = "cross.team-orl";
@@ -19,6 +21,7 @@ void startCameraServer();
 
 // Globals
 GoalDetector detector;
+FrameStore frameStore;
 volatile bool goalJustScored = false;
 
 // Detection parameters
@@ -27,7 +30,7 @@ volatile bool goalJustScored = false;
 #define PIXEL_THRESHOLD 25      // per-pixel brightness change
 #define CHANGE_THRESHOLD 0.08f  // 8% of ROI pixels must change
 #define COOLDOWN_MS 3000
-#define STABLE_FRAMES_NEEDED 5  // require more stability before triggering
+#define STABLE_FRAMES_NEEDED 5
 
 void setup() {
     Serial.begin(115200);
@@ -38,8 +41,13 @@ void setup() {
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
 
+    // Init frame store
+    if (!frameStore.begin()) {
+        Serial.println("FATAL: FrameStore init failed!");
+        while (true) delay(1000);
+    }
+
     // Init camera in GRAYSCALE for detection
-    // We'll encode to JPEG for the web stream in the handler
     if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_GRAYSCALE)) {
         Serial.println("FATAL: Camera init failed!");
         while (true) delay(1000);
@@ -95,7 +103,7 @@ void loop() {
         memset(prevFrame, 0, DETECT_W * DETECT_H);
     }
 
-    // Grab a frame
+    // Grab a frame — ONLY the main loop calls esp_camera_fb_get()
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
         delay(10);
@@ -114,11 +122,17 @@ void loop() {
 
     // Verify we got a grayscale frame
     if (fb->format != PIXFORMAT_GRAYSCALE || fb->len < DETECT_W * DETECT_H) {
-        Serial.printf("Unexpected frame: format=%d len=%d (expected %d)\n",
-            fb->format, fb->len, DETECT_W * DETECT_H);
         esp_camera_fb_return(fb);
         delay(100);
         return;
+    }
+
+    // Convert to JPEG and store for web stream
+    uint8_t* jpg_buf = NULL;
+    size_t jpg_len = 0;
+    if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
+        frameStore.update(jpg_buf, jpg_len);
+        free(jpg_buf);
     }
 
     if (!hasPrev) {
@@ -148,7 +162,6 @@ void loop() {
         }
     }
 
-    // Copy BEFORE returning the frame buffer
     memcpy(prevFrame, fb->buf, DETECT_W * DETECT_H);
     esp_camera_fb_return(fb);
 
@@ -192,5 +205,5 @@ void loop() {
         lastPrint = now;
     }
 
-    delay(30);
+    delay(10);
 }
