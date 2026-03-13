@@ -38,6 +38,7 @@ extern void requestStart();
 extern void requestPause();
 extern void requestResume();
 extern void requestStop();
+extern void requestDeduct();
 extern void requestReset();
 
 #define PART_BOUNDARY "123456789000000000000987654321"
@@ -166,6 +167,13 @@ static esp_err_t stop_handler(httpd_req_t *req) {
     return httpd_resp_send(req, "{\"ok\":true}", 11);
 }
 
+static esp_err_t deduct_handler(httpd_req_t *req) {
+    requestDeduct();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, "{\"ok\":true}", 11);
+}
+
 static esp_err_t reset_handler(httpd_req_t *req) {
     requestReset();
     httpd_resp_set_type(req, "application/json");
@@ -226,6 +234,11 @@ static esp_err_t index_handler(httpd_req_t *req) {
         ".gol-entry .gol-info{flex:1;font-size:0.85em}"
         ".gol-entry .gol-num{color:#0f0;font-size:1.4em;font-weight:bold}"
         ".gol-entry .gol-time{color:#888;font-size:0.75em}"
+        ".btn-var{background:#c00;color:#fff;padding:6px 12px;font-size:0.8em;"
+        "border:none;border-radius:6px;cursor:pointer;font-weight:bold}"
+        ".btn-var:active{transform:scale(0.95)}"
+        ".gol-annulled{opacity:0.4}"
+        ".gol-annulled .gol-num{text-decoration:line-through;color:#f44}"
         "#lightbox{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);"
         "display:none;justify-content:center;align-items:center;z-index:100;cursor:pointer}"
         "#lightbox img{max-width:95%;max-height:95%;border:3px solid #0f0;border-radius:8px}"
@@ -385,7 +398,15 @@ static esp_err_t index_handler(httpd_req_t *req) {
         "const tm=document.createElement('div');tm.className='gol-time';"
         "tm.textContent=new Date().toLocaleTimeString();"
         "info.appendChild(num);info.appendChild(tm);"
-        "e.appendChild(img);e.appendChild(info);"
+        "const vb=document.createElement('button');vb.className='btn-var';"
+        "vb.textContent='VAR';"
+        "vb.onclick=function(ev){ev.stopPropagation();"
+        "if(this.disabled)return;"
+        "fetch('/deduct').then(()=>{"
+        "e.classList.add('gol-annulled');"
+        "this.textContent='ANULADO';this.disabled=true;"
+        "this.style.background='#555';});return false;};"
+        "e.appendChild(img);e.appendChild(info);e.appendChild(vb);"
         "glog.insertBefore(e,glog.firstChild);}"
         "}catch(e){$('info').textContent='disconnected';}},500);"
         "</script></body></html>";
@@ -411,6 +432,7 @@ void startCameraServer() {
         httpd_uri_t pause_uri = { .uri = "/pause", .method = HTTP_GET, .handler = pause_handler };
         httpd_uri_t resume_uri = { .uri = "/resume", .method = HTTP_GET, .handler = resume_handler };
         httpd_uri_t stop_uri = { .uri = "/stop", .method = HTTP_GET, .handler = stop_handler };
+        httpd_uri_t deduct_uri = { .uri = "/deduct", .method = HTTP_GET, .handler = deduct_handler };
         httpd_uri_t reset_uri = { .uri = "/reset", .method = HTTP_GET, .handler = reset_handler };
         httpd_register_uri_handler(server, &index_uri);
         httpd_register_uri_handler(server, &status_uri);
@@ -421,6 +443,7 @@ void startCameraServer() {
         httpd_register_uri_handler(server, &pause_uri);
         httpd_register_uri_handler(server, &resume_uri);
         httpd_register_uri_handler(server, &stop_uri);
+        httpd_register_uri_handler(server, &deduct_uri);
         httpd_register_uri_handler(server, &reset_uri);
         Serial.println("Web server started on port 80");
     }

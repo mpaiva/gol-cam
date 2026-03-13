@@ -94,6 +94,13 @@ void requestStop() {
     Serial.println("[game] Game stopped");
 }
 
+void requestDeduct() {
+    if (detector.goalCount > 0) {
+        detector.goalCount--;
+        Serial.printf("[VAR] Gol annulled! Score now %d\n", detector.goalCount);
+    }
+}
+
 void requestReset() {
     detector.goalCount = 0;
     goalJustScored = false;
