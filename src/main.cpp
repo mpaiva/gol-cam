@@ -12,9 +12,13 @@
 #include "goal_detector.h"
 #include "frame_store.h"
 
-// --- WiFi credentials ---
-const char* WIFI_SSID     = "cross.team-orl";
-const char* WIFI_PASSWORD = "euamoovasco";
+// --- WiFi credentials (from .env file via build defines) ---
+#ifndef WIFI_SSID
+#error "WIFI_SSID not defined. Create a .env file with WIFI_SSID=your_ssid"
+#endif
+#ifndef WIFI_PASSWORD
+#error "WIFI_PASSWORD not defined. Create a .env file with WIFI_PASSWORD=your_password"
+#endif
 
 // Forward declarations
 void startCameraServer();
