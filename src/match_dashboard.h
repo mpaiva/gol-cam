@@ -86,6 +86,17 @@ display:none;flex-direction:column;justify-content:center;align-items:center;z-i
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
 .btn-anula{background:#c00;color:#fff;padding:14px 30px;font-size:1.2em;
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
+.cam-filters{display:flex;gap:4px;flex-wrap:wrap;justify-content:center;margin:4px 0}
+.cam-filters .btn{padding:4px 8px;font-size:0.7em;background:#222;color:#aaa;border:1px solid #444}
+.cam-filters .btn.active{background:#0ff;color:#000;border-color:#0ff}
+.cam-sliders{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:4px 0;font-size:0.7em;color:#888}
+.cam-sliders label{display:flex;align-items:center;gap:3px}
+.cam-sliders input[type=range]{width:60px;accent-color:#0ff}
+.roi-controls{display:flex;gap:4px;align-items:center;justify-content:center;margin:4px 0;flex-wrap:wrap}
+.roi-controls .btn{padding:6px 10px;font-size:0.8em;background:#333;color:#fff;min-width:34px}
+.roi-controls .btn:active{background:#555}
+.roi-controls .btn-rst{background:#555;font-size:0.7em}
+.roi-info{color:#0ff;font-size:0.7em;text-align:center;margin:2px 0}
 .lang-picker{position:fixed;top:8px;right:8px;display:flex;gap:4px;z-index:200}
 .lang-btn{padding:4px 8px;font-size:0.75em;border:1px solid #555;border-radius:4px;
 background:#222;color:#aaa;cursor:pointer;font-weight:bold}
@@ -136,11 +147,65 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <div class='feed-box'>
 <div class='feed-label'><span data-i18n='match.home_goal'>Home Goal</span> <span id='st-home' class='feed-status st-idle'>...</span></div>
 <img id='cam-home'/>
+<div class='cam-filters' id='filters-home'>
+<button class='btn active' onclick="setCamFilter('home',0,this)">Vivid</button>
+<button class='btn' onclick="setCamFilter('home',1,this)">Night IR</button>
+<button class='btn' onclick="setCamFilter('home',2,this)">Gray</button>
+<button class='btn' onclick="setCamFilter('home',3,this)">Negative</button>
+<button class='btn' onclick="setCamFilter('home',4,this)">Hi-Con B&W</button>
+<button class='btn' onclick="setCamFilter('home',5,this)">IR+Gray</button>
+</div>
+<div class='cam-sliders'>
+<label>Bri<input type='range' min='-2' max='2' value='1' onchange="camAdj('home','bri',this.value)"></label>
+<label>Con<input type='range' min='-2' max='2' value='2' onchange="camAdj('home','con',this.value)"></label>
+<label>Sat<input type='range' min='-2' max='2' value='2' onchange="camAdj('home','sat',this.value)"></label>
+<label>Sharp<input type='range' min='-2' max='2' value='2' onchange="camAdj('home','sharp',this.value)"></label>
+</div>
+<div class='roi-controls'>
+<button class='btn' onclick="moveRoi('home',0,-8)">&#9650;</button>
+<button class='btn' onclick="moveRoi('home',-8,0)">&#9664;</button>
+<button class='btn btn-rst' onclick="resetRoi('home')">RST</button>
+<button class='btn' onclick="moveRoi('home',8,0)">&#9654;</button>
+<button class='btn' onclick="moveRoi('home',0,8)">&#9660;</button>
+<span style='color:#666'>|</span>
+W<button class='btn' onclick="resizeRoi('home',-2,0)">&#8722;</button>
+<button class='btn' onclick="resizeRoi('home',2,0)">&#43;</button>
+H<button class='btn' onclick="resizeRoi('home',0,-2)">&#8722;</button>
+<button class='btn' onclick="resizeRoi('home',0,2)">&#43;</button>
+</div>
+<div class='roi-info' id='roi-home'></div>
 <div class='ctrl-row'><button class='btn btn-cal' onclick='calibrate("home")' data-i18n='match.cal_home'>Calibrate Home</button></div>
 </div>
 <div class='feed-box'>
 <div class='feed-label'><span data-i18n='match.away_goal'>Away Goal</span> <span id='st-away' class='feed-status st-idle'>...</span></div>
 <img id='cam-away'/>
+<div class='cam-filters' id='filters-away'>
+<button class='btn active' onclick="setCamFilter('away',0,this)">Vivid</button>
+<button class='btn' onclick="setCamFilter('away',1,this)">Night IR</button>
+<button class='btn' onclick="setCamFilter('away',2,this)">Gray</button>
+<button class='btn' onclick="setCamFilter('away',3,this)">Negative</button>
+<button class='btn' onclick="setCamFilter('away',4,this)">Hi-Con B&W</button>
+<button class='btn' onclick="setCamFilter('away',5,this)">IR+Gray</button>
+</div>
+<div class='cam-sliders'>
+<label>Bri<input type='range' min='-2' max='2' value='1' onchange="camAdj('away','bri',this.value)"></label>
+<label>Con<input type='range' min='-2' max='2' value='2' onchange="camAdj('away','con',this.value)"></label>
+<label>Sat<input type='range' min='-2' max='2' value='2' onchange="camAdj('away','sat',this.value)"></label>
+<label>Sharp<input type='range' min='-2' max='2' value='2' onchange="camAdj('away','sharp',this.value)"></label>
+</div>
+<div class='roi-controls'>
+<button class='btn' onclick="moveRoi('away',0,-8)">&#9650;</button>
+<button class='btn' onclick="moveRoi('away',-8,0)">&#9664;</button>
+<button class='btn btn-rst' onclick="resetRoi('away')">RST</button>
+<button class='btn' onclick="moveRoi('away',8,0)">&#9654;</button>
+<button class='btn' onclick="moveRoi('away',0,8)">&#9660;</button>
+<span style='color:#666'>|</span>
+W<button class='btn' onclick="resizeRoi('away',-2,0)">&#8722;</button>
+<button class='btn' onclick="resizeRoi('away',2,0)">&#43;</button>
+H<button class='btn' onclick="resizeRoi('away',0,-2)">&#8722;</button>
+<button class='btn' onclick="resizeRoi('away',0,2)">&#43;</button>
+</div>
+<div class='roi-info' id='roi-away'></div>
 <div class='ctrl-row'><button class='btn btn-cal' onclick='calibrate("away")' data-i18n='match.cal_away'>Calibrate Away</button></div>
 </div>
 </div>
@@ -326,6 +391,9 @@ async function pollBoard(side){
     else if(d.state===3){el.textContent=t('match.paused');el.className='feed-status st-online';}
     else if(d.state===0){el.textContent=d.calibrated?t('match.ready'):t('match.idle');el.className='feed-status st-idle';}
     else{el.textContent=t('match.cal');el.className='feed-status st-idle';}
+    // Update ROI info
+    var ri=$(('roi-'+side));
+    if(ri&&d.roiW!==undefined)ri.textContent='ROI: '+d.roiW+'x'+d.roiH+' offset:'+d.roiX+','+d.roiY;
   }catch(e){
     b.online=false;
     $('st-'+side).textContent=t('match.offline');
@@ -414,6 +482,27 @@ $('btn-lb-anula').onclick=function(){
   });
   $('lightbox').style.display='none';
 };
+
+async function setCamFilter(side,preset,btn){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/cam?preset='+preset);
+  var container=$('filters-'+side);
+  container.querySelectorAll('.btn').forEach(function(b){b.classList.remove('active');});
+  btn.classList.add('active');}
+
+async function camAdj(side,param,val){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/cam?'+param+'='+val);}
+
+async function moveRoi(side,dx,dy){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/roi?dx='+dx+'&dy='+dy);}
+async function resizeRoi(side,dw,dh){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/roi?dw='+dw+'&dh='+dh);}
+async function resetRoi(side){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/roi?x=0&y=0');}
 
 async function calibrate(side){
   const ip=boards[side].ip;

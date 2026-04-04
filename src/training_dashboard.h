@@ -74,6 +74,22 @@ line-height:1.4}
 .s-cal{background:#f90;color:#000}
 .s-play{background:#0a0;color:#fff}
 .s-pause{background:#ff0;color:#000}
+.dpad{display:grid;grid-template-columns:40px 40px 40px;grid-template-rows:40px 40px 40px;
+gap:4px;margin:8px 0}
+.dpad .btn{padding:0;width:40px;height:40px;font-size:1.2em;background:#333;color:#fff;
+border-radius:6px;display:flex;align-items:center;justify-content:center}
+.dpad .btn:active{background:#555}
+.dpad .btn-center{background:#555;font-size:0.7em}
+#roi-info{color:#0ff;font-size:0.8em;margin:2px 0}
+.cam-filters{display:flex;gap:4px;flex-wrap:wrap;justify-content:center;margin:6px 0}
+.cam-filters .btn{padding:4px 8px;font-size:0.7em;background:#222;color:#aaa;border:1px solid #444}
+.cam-filters .btn.active{background:#0ff;color:#000;border-color:#0ff}
+.cam-sliders{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:4px 0;font-size:0.7em;color:#888}
+.cam-sliders label{display:flex;align-items:center;gap:3px}
+.cam-sliders input[type=range]{width:60px;accent-color:#0ff}
+.roi-resize{display:flex;gap:4px;align-items:center;justify-content:center;margin:4px 0;font-size:0.8em;color:#888}
+.roi-resize .btn{padding:6px 10px;font-size:0.8em;background:#333;color:#fff;min-width:34px}
+.roi-resize .btn:active{background:#555}
 .lang-picker{position:fixed;top:8px;right:8px;display:flex;gap:4px;z-index:200}
 .lang-btn{padding:4px 8px;font-size:0.75em;border:1px solid #555;border-radius:4px;
 background:#222;color:#aaa;cursor:pointer;font-weight:bold}
@@ -98,6 +114,34 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <div id='state-badge' class='s-idle' data-i18n='train.idle'>IDLE</div>
 <div id='score' style='display:none'>0</div>
 <img id='cam'/>
+<div class='cam-filters' id='filters'>
+<button class='btn active' onclick="setCamFilter(0,this)">Vivid</button>
+<button class='btn' onclick="setCamFilter(1,this)">Night IR</button>
+<button class='btn' onclick="setCamFilter(2,this)">Gray</button>
+<button class='btn' onclick="setCamFilter(3,this)">Negative</button>
+<button class='btn' onclick="setCamFilter(4,this)">Hi-Con B&W</button>
+<button class='btn' onclick="setCamFilter(5,this)">IR+Gray</button>
+</div>
+<div class='cam-sliders'>
+<label>Bri<input type='range' min='-2' max='2' value='1' onchange="camAdj('bri',this.value)"></label>
+<label>Con<input type='range' min='-2' max='2' value='2' onchange="camAdj('con',this.value)"></label>
+<label>Sat<input type='range' min='-2' max='2' value='2' onchange="camAdj('sat',this.value)"></label>
+<label>Sharp<input type='range' min='-2' max='2' value='2' onchange="camAdj('sharp',this.value)"></label>
+</div>
+<div class='dpad'>
+<div></div><button class='btn' onclick="moveRoi(0,-8)">&#9650;</button><div></div>
+<button class='btn' onclick="moveRoi(-8,0)">&#9664;</button>
+<button class='btn btn-center' onclick="moveRoi(0,0,true)">RST</button>
+<button class='btn' onclick="moveRoi(8,0)">&#9654;</button>
+<div></div><button class='btn' onclick="moveRoi(0,8)">&#9660;</button><div></div>
+</div>
+<div class='roi-resize'>
+W<button class='btn' onclick="resizeRoi(-2,0)">&#8722;</button>
+<button class='btn' onclick="resizeRoi(2,0)">&#43;</button>
+H<button class='btn' onclick="resizeRoi(0,-2)">&#8722;</button>
+<button class='btn' onclick="resizeRoi(0,2)">&#43;</button>
+</div>
+<div id='roi-info'></div>
 <div id='game-bar'>
 <div class='bar-row'>
 <button class='btn btn-pause' id='btn-pause' onclick='pauseGame()' data-i18n='train.pause'>Pause</button>
@@ -227,6 +271,21 @@ if(varBtn){varBtn.textContent=t('var.annulled');varBtn.disabled=true;
 varBtn.style.background='#555';}});
 $('lightbox').style.display='none';}
 
+async function setCamFilter(preset,btn){
+await fetch('/cam?preset='+preset);
+$('filters').querySelectorAll('.btn').forEach(function(b){b.classList.remove('active');});
+btn.classList.add('active');}
+
+async function camAdj(param,val){
+await fetch('/cam?'+param+'='+val);}
+
+async function moveRoi(dx,dy,reset){
+if(reset)await fetch('/roi?x=0&y=0');
+else await fetch('/roi?dx='+dx+'&dy='+dy);}
+
+async function resizeRoi(dw,dh){
+await fetch('/roi?dw='+dw+'&dh='+dh);}
+
 async function calibrate(){
 $('btn-cal').textContent=t('train.calibrating');
 $('btn-cal').disabled=true;
@@ -287,7 +346,8 @@ $('cd-fill').style.width=(d.cdRemain/100)+'%';
 }else{$('countdown').style.display='none';}
 if(d.calibrated){$('cal-info').style.display='';
 $('cal-info').textContent='Dice: '+d.calPx+'px, '+d.calW+'x'+d.calH+
-'px (RGB565: '+d.calR+','+d.calG+','+d.calB+')';}
+'px (contrast>='+d.calContrast+')';}
+if(d.roiW!==undefined)$('roi-info').textContent='ROI: '+d.roiW+'x'+d.roiH+' offset:'+d.roiX+','+d.roiY;
 $('score').textContent=d.goals;
 if(d.state===2||d.state===3)$('info').textContent='fps:'+d.fps;
 if(d.state===1)log('Calibrating...','log-cal');

@@ -1,16 +1,18 @@
 // =============================================================
 // gol-cam — Button Soccer Goal Detection Camera
-// Calibration-based yellow dice (dadinho) detection
+// Contrast-based detection with I2S goal celebration audio
 // =============================================================
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include "esp_camera.h"
 #include "img_converters.h"
+#include "driver/i2s.h"
 #include "camera.h"
 #include "pins.h"
 #include "goal_detector.h"
 #include "frame_store.h"
+#include "gol_sound.h"
 
 // --- WiFi credentials (from .env file via build defines) ---
 #ifndef WIFI_SSID
@@ -35,15 +37,18 @@ volatile bool goalJustScored = false;
 enum GameState { STATE_IDLE, STATE_CALIBRATING, STATE_PLAYING, STATE_PAUSED };
 volatile GameState gameState = STATE_IDLE;
 
-// Calibrated color (set during calibration)
-volatile int16_t calR = -1, calG = -1, calB = -1;  // -1 = not calibrated
-volatile int16_t calTolR = 5, calTolG = 10, calTolB = 5;  // tolerance per channel
-volatile int calPixelCount = 0;  // how many pixels the dice was during calibration
+// Contrast-based calibration (lighting-independent)
+volatile int calContrastMin = 0;   // min distance from background to count as object (0 = not calibrated)
+volatile int calPixelCount = 0;
 volatile int calBboxW = 0, calBboxH = 0;
 
 // Detection params
 #define COOLDOWN_MS 10000
-#define STABLE_FRAMES_NEEDED 3
+#define STABLE_FRAMES_NEEDED 1
+
+// ROI offset and size for digital pan/resize (adjusted via /roi endpoint)
+volatile int roiOffsetX = 0, roiOffsetY = 0;
+volatile int roiW = DETECT_W * 8 / 10, roiH = DETECT_H * 8 / 10;
 
 // Shared detection state for web console
 volatile int lastMatchCount = 0, lastBboxW = 0, lastBboxH = 0;
@@ -51,18 +56,83 @@ volatile int lastMinPx = 0, lastMaxPx = 0, lastMaxBbox = 0;
 volatile float lastDensity = 0;
 volatile const char* lastRejectReason = "";
 
-// Calibration snapshot: JPEG of the frame with detected object highlighted
+// Calibration snapshot
 uint8_t* calSnapshotBuf = nullptr;
 size_t calSnapshotLen = 0;
 SemaphoreHandle_t calSnapshotMutex = nullptr;
-char calFeedback[256] = "";  // calibration feedback message
+char calFeedback[256] = "";
 
-// Goal snapshot: JPEG of the frame when a goal was scored
+// Goal snapshot
 uint8_t* goalSnapshotBuf = nullptr;
 size_t goalSnapshotLen = 0;
 SemaphoreHandle_t goalSnapshotMutex = nullptr;
-volatile uint32_t goalSnapshotSeq = 0;  // increments each goal, so browser knows when new one is ready
-volatile uint32_t lastGoalTimeMs = 0;  // millis() when last gol was scored (for cooldown)
+volatile uint32_t goalSnapshotSeq = 0;
+volatile uint32_t lastGoalTimeMs = 0;
+
+// --- I2S Speaker for goal celebration ---
+// Driver is installed only when playing, then uninstalled to keep speaker silent.
+#define I2S_NUM I2S_NUM_0
+#define GOAL_SAMPLE_RATE 16000
+TaskHandle_t goalSoundTaskHandle = NULL;
+
+void goalSoundTask(void* param) {
+    i2s_config_t i2s_config = {};
+    i2s_config.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
+    i2s_config.sample_rate = GOAL_SAMPLE_RATE;
+    i2s_config.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
+    i2s_config.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+    i2s_config.communication_format = I2S_COMM_FORMAT_STAND_I2S;
+    i2s_config.intr_alloc_flags = 0;
+    i2s_config.dma_buf_count = 8;
+    i2s_config.dma_buf_len = 256;
+    i2s_config.use_apll = false;
+
+    i2s_pin_config_t pin_config = {};
+    pin_config.bck_io_num = SPK_BCLK_PIN;
+    pin_config.ws_io_num = SPK_LRC_PIN;
+    pin_config.data_out_num = SPK_DOUT_PIN;
+    pin_config.data_in_num = I2S_PIN_NO_CHANGE;
+
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        // Install I2S driver, play sound 3x, then uninstall to keep amp silent
+        if (i2s_driver_install(I2S_NUM, &i2s_config, 0, NULL) != ESP_OK) continue;
+        i2s_set_pin(I2S_NUM, &pin_config);
+        i2s_zero_dma_buffer(I2S_NUM);
+
+        // Play the embedded goal sound 3 times
+        for (int rep = 0; rep < 3; rep++) {
+            const int16_t* src = GOL_SOUND;
+            int remaining = GOL_SOUND_SAMPLES;
+            while (remaining > 0) {
+                int chunk = min(256, remaining);
+                size_t written;
+                i2s_write(I2S_NUM, src, chunk * sizeof(int16_t), &written, portMAX_DELAY);
+                src += chunk;
+                remaining -= chunk;
+            }
+        }
+
+        // Flush silence then uninstall — amp goes quiet
+        int16_t silence[256] = {};
+        size_t written;
+        i2s_write(I2S_NUM, silence, sizeof(silence), &written, portMAX_DELAY);
+        delay(50);
+        i2s_driver_uninstall(I2S_NUM);
+    }
+}
+
+void playGoalSound() {
+    if (goalSoundTaskHandle) {
+        xTaskNotifyGive(goalSoundTaskHandle);
+    }
+}
+
+void initSpeaker() {
+    xTaskCreatePinnedToCore(goalSoundTask, "goalSound", 4096, NULL, 1, &goalSoundTaskHandle, 1);
+    Serial.println("[audio] Speaker task ready");
+}
 
 // Called from HTTP handler to trigger calibration
 void requestCalibration() {
@@ -71,7 +141,7 @@ void requestCalibration() {
 }
 
 void requestStart() {
-    if (calR >= 0) {
+    if (calContrastMin > 0) {
         gameState = STATE_PLAYING;
         detector.goalCount = 0;
         goalJustScored = false;
@@ -147,10 +217,23 @@ void setup() {
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
         s->set_saturation(s, 2);
-        s->set_brightness(s, 0);
-        s->set_whitebal(s, 1);
-        s->set_awb_gain(s, 1);
+        s->set_contrast(s, 2);
+        s->set_brightness(s, 1);
+        s->set_sharpness(s, 2);
+        s->set_whitebal(s, 0);
+        s->set_awb_gain(s, 0);
+        s->set_wb_mode(s, 0);
+        s->set_exposure_ctrl(s, 1);
+        s->set_aec2(s, 1);
+        s->set_gain_ctrl(s, 1);
+        s->set_gainceiling(s, (gainceiling_t)4);
+        s->set_lenc(s, 1);
+        s->set_raw_gma(s, 1);
+        Serial.println("[cam] Sensor configured");
     }
+
+    // Initialize I2S speaker
+    initSpeaker();
 
     // Static IP configuration (optional — set in .env)
 #ifdef WIFI_STATIC_IP
@@ -182,11 +265,60 @@ void setup() {
     Serial.println("=== gol-cam ready ===");
 }
 
+// Helper: compute ROI bounds
+void computeROI(int &rx, int &ry, int &rw, int &rh) {
+    rw = roiW; rh = roiH;
+    rx = (DETECT_W - rw) / 2 + roiOffsetX;
+    ry = (DETECT_H - rh) / 2 + roiOffsetY;
+    if (rx < 0) rx = 0;
+    if (ry < 0) ry = 0;
+    if (rx + rw > DETECT_W) rx = DETECT_W - rw;
+    if (ry + rh > DETECT_H) ry = DETECT_H - rh;
+}
+
+// Helper: compute background average from ALL ROI pixels.
+// Since the background dominates the ROI area (~95%+), the average
+// naturally represents the background even when the dadinho is present.
+// This is more robust than edge-band sampling when the ROI contains
+// varying brightness (goal frame edges, reflections).
+void computeBackground(uint16_t* pixels, int rx, int ry, int rw, int rh,
+                        int16_t &bgR, int16_t &bgG, int16_t &bgB) {
+    uint32_t sR = 0, sG = 0, sB = 0;
+    uint32_t cnt = rw * rh;
+
+    for (int y = ry; y < ry + rh; y++) {
+        for (int x = rx; x < rx + rw; x++) {
+            uint16_t raw = pixels[y * DETECT_W + x];
+            uint16_t px = (raw >> 8) | (raw << 8);
+            sR += (px >> 11) & 0x1F;
+            sG += (px >> 5) & 0x3F;
+            sB += px & 0x1F;
+        }
+    }
+    if (cnt == 0) cnt = 1;
+    bgR = sR / cnt;
+    bgG = sG / cnt;
+    bgB = sB / cnt;
+}
+
+// Draw ROI rectangle (cyan)
+void drawROI(uint16_t* pixels, int rx, int ry, int rw, int rh) {
+    uint16_t roiColor = 0xFF07; // cyan byte-swapped
+    int rx2 = rx + rw - 1, ry2 = ry + rh - 1;
+    for (int x = rx; x <= rx2; x++) {
+        pixels[ry * DETECT_W + x] = roiColor;
+        pixels[ry2 * DETECT_W + x] = roiColor;
+    }
+    for (int y = ry; y <= ry2; y++) {
+        pixels[y * DETECT_W + rx] = roiColor;
+        pixels[y * DETECT_W + rx2] = roiColor;
+    }
+}
+
 // Save calibration snapshot JPEG with bbox drawn
 void saveCalSnapshot(camera_fb_t* fb, uint16_t* pixels, int x1, int y1, int x2, int y2, uint16_t color) {
     if (!calSnapshotBuf || !calSnapshotMutex) return;
 
-    // Draw bounding box on frame
     if (x1 >= 0) {
         for (int x = x1; x <= x2; x++) {
             pixels[y1 * DETECT_W + x] = color;
@@ -202,7 +334,6 @@ void saveCalSnapshot(camera_fb_t* fb, uint16_t* pixels, int x1, int y1, int x2, 
         }
     }
 
-    // Convert to JPEG and store
     uint8_t* jpg_buf = NULL;
     size_t jpg_len = 0;
     if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
@@ -212,83 +343,69 @@ void saveCalSnapshot(camera_fb_t* fb, uint16_t* pixels, int x1, int y1, int x2, 
             calSnapshotLen = jpg_len;
         }
         xSemaphoreGive(calSnapshotMutex);
-        // Also update the live stream
         frameStore.update(jpg_buf, jpg_len);
         free(jpg_buf);
     }
 }
 
-// Find the brightest/most-distinct object in the frame for calibration
+// Calibration: measure contrast ratio between object and background
 void doCalibration(camera_fb_t* fb, uint16_t* pixels) {
     snprintf(calFeedback, sizeof(calFeedback), "Sampling background...");
 
-    // Step 1: Find the pixel that is most different from the background
-    uint32_t bgR = 0, bgG = 0, bgB = 0, bgCount = 0;
-    for (int y = 0; y < DETECT_H; y++) {
-        for (int x = 0; x < DETECT_W; x++) {
-            if (x > DETECT_W/10 && x < DETECT_W*9/10 &&
-                y > DETECT_H/10 && y < DETECT_H*9/10) continue;
-            uint16_t raw = pixels[y * DETECT_W + x];
-            uint16_t px = (raw >> 8) | (raw << 8);
-            bgR += (px >> 11) & 0x1F;
-            bgG += (px >> 5) & 0x3F;
-            bgB += px & 0x1F;
-            bgCount++;
-        }
-    }
-    int16_t avgBgR = bgR / bgCount;
-    int16_t avgBgG = bgG / bgCount;
-    int16_t avgBgB = bgB / bgCount;
-    Serial.printf("[cal] Background: R=%d G=%d B=%d\n", avgBgR, avgBgG, avgBgB);
+    int rx, ry, rw, rh;
+    computeROI(rx, ry, rw, rh);
 
-    // Step 2: Find the peak distinct pixel
-    int16_t bestR = 0, bestG = 0, bestB = 0;
+    // Step 1: Background from ROI edge band
+    int16_t bgR, bgG, bgB;
+    computeBackground(pixels, rx, ry, rw, rh, bgR, bgG, bgB);
+    Serial.printf("[cal] Background: R=%d G=%d B=%d\n", bgR, bgG, bgB);
+
+    // Step 2: Find peak contrast pixel in ROI interior
     int bestDist = 0;
-    uint32_t sumR = 0, sumG = 0, sumB = 0;
-    uint32_t objCount = 0;
-    int minX = DETECT_W, maxX = 0, minY = DETECT_H, maxY = 0;
+    int marginX = rw * 15 / 100, marginY = rh * 15 / 100;
+    if (marginX < 2) marginX = 2;
+    if (marginY < 2) marginY = 2;
 
-    for (int y = DETECT_H/10; y < DETECT_H*9/10; y++) {
-        for (int x = DETECT_W/10; x < DETECT_W*9/10; x++) {
+    for (int y = ry + marginY; y < ry + rh - marginY; y++) {
+        for (int x = rx + marginX; x < rx + rw - marginX; x++) {
             uint16_t raw = pixels[y * DETECT_W + x];
             uint16_t px = (raw >> 8) | (raw << 8);
             int16_t r = (px >> 11) & 0x1F;
             int16_t g = (px >> 5) & 0x3F;
             int16_t b = px & 0x1F;
-
-            int dist = abs(r - avgBgR) + abs(g - avgBgG) + abs(b - avgBgB);
-            if (dist > bestDist) {
-                bestDist = dist;
-                bestR = r; bestG = g; bestB = b;
-            }
+            int dist = abs(r - bgR) + abs(g - bgG) + abs(b - bgB);
+            if (dist > bestDist) bestDist = dist;
         }
     }
 
-    Serial.printf("[cal] Peak distinct pixel: R=%d G=%d B=%d (dist=%d)\n",
-        bestR, bestG, bestB, bestDist);
+    Serial.printf("[cal] Peak contrast distance: %d\n", bestDist);
 
     if (bestDist < 5) {
         snprintf(calFeedback, sizeof(calFeedback),
-            "FAILED: No distinct object found. Place the dadinho in the center of the frame and try again.");
-        // Save snapshot without bbox
+            "FAILED: No distinct object found. Place the dadinho in the ROI and try again.");
         saveCalSnapshot(fb, pixels, -1, 0, 0, 0, 0);
         Serial.println("[cal] FAILED: no distinct object found!");
         gameState = STATE_IDLE;
         return;
     }
 
-    // Second pass: collect similar pixels
-    int16_t tolR = 4, tolG = 8, tolB = 4;
-    for (int y = DETECT_H/10; y < DETECT_H*9/10; y++) {
-        for (int x = DETECT_W/10; x < DETECT_W*9/10; x++) {
+    // Step 3: Set contrast threshold at 65% of peak distance
+    int threshold = bestDist * 65 / 100;
+    if (threshold < 3) threshold = 3;
+
+    // Step 4: Collect pixels exceeding threshold to measure object size
+    uint32_t objCount = 0;
+    int minX = DETECT_W, maxX = 0, minY = DETECT_H, maxY = 0;
+
+    for (int y = ry + marginY; y < ry + rh - marginY; y++) {
+        for (int x = rx + marginX; x < rx + rw - marginX; x++) {
             uint16_t raw = pixels[y * DETECT_W + x];
             uint16_t px = (raw >> 8) | (raw << 8);
             int16_t r = (px >> 11) & 0x1F;
             int16_t g = (px >> 5) & 0x3F;
             int16_t b = px & 0x1F;
-
-            if (abs(r - bestR) <= tolR && abs(g - bestG) <= tolG && abs(b - bestB) <= tolB) {
-                sumR += r; sumG += g; sumB += b;
+            int dist = abs(r - bgR) + abs(g - bgG) + abs(b - bgB);
+            if (dist >= threshold) {
                 objCount++;
                 if (x < minX) minX = x;
                 if (x > maxX) maxX = x;
@@ -300,20 +417,15 @@ void doCalibration(camera_fb_t* fb, uint16_t* pixels) {
 
     if (objCount < 5) {
         snprintf(calFeedback, sizeof(calFeedback),
-            "FAILED: Object too small (%d pixels). Move the dadinho closer to the camera.", (int)objCount);
+            "FAILED: Object too small (%d px). Move dadinho closer.", (int)objCount);
         saveCalSnapshot(fb, pixels, -1, 0, 0, 0, 0);
         Serial.println("[cal] FAILED: object too small!");
         gameState = STATE_IDLE;
         return;
     }
 
-    // Store calibrated values
-    calR = sumR / objCount;
-    calG = sumG / objCount;
-    calB = sumB / objCount;
-    calTolR = max((int16_t)3, tolR);
-    calTolG = max((int16_t)6, tolG);
-    calTolB = max((int16_t)3, tolB);
+    // Store calibration
+    calContrastMin = threshold;
     calPixelCount = objCount;
     calBboxW = maxX - minX + 1;
     calBboxH = maxY - minY + 1;
@@ -323,23 +435,22 @@ void doCalibration(camera_fb_t* fb, uint16_t* pixels) {
     int limitBbox = max(calBboxW, calBboxH) * 2;
 
     snprintf(calFeedback, sizeof(calFeedback),
-        "OK! Found dice: %d pixels, %dx%d px. Color RGB565(%d,%d,%d). "
-        "Detection limits: %d-%d pixels, bbox <= %d px.",
-        (int)calPixelCount, calBboxW, calBboxH,
-        (int)calR, (int)calG, (int)calB,
+        "OK! Contrast threshold: %d (peak: %d). Object: %d px, %dx%d. "
+        "Limits: %d-%d px, bbox <= %d.",
+        threshold, bestDist, (int)objCount, calBboxW, calBboxH,
         limitMin, limitMax, limitBbox);
 
-    // Save snapshot with green bbox around detected object
+    // Save snapshot with green bbox
     int bx1 = max(0, minX - 2);
     int by1 = max(0, minY - 2);
     int bx2 = min(DETECT_W - 1, maxX + 2);
     int by2 = min(DETECT_H - 1, maxY + 2);
-    saveCalSnapshot(fb, pixels, bx1, by1, bx2, by2, 0xE007);  // green
+    saveCalSnapshot(fb, pixels, bx1, by1, bx2, by2, 0xE007);
 
-    Serial.printf("[cal] SUCCESS! Color: R=%d G=%d B=%d, %d pixels, bbox=%dx%d\n",
-        calR, calG, calB, calPixelCount, calBboxW, calBboxH);
+    Serial.printf("[cal] SUCCESS! Contrast threshold=%d, %d px, bbox=%dx%d\n",
+        calContrastMin, calPixelCount, calBboxW, calBboxH);
 
-    // Flash LED to confirm
+    // Flash LED + play sound to confirm
     digitalWrite(LED_PIN, HIGH);
     delay(200);
     digitalWrite(LED_PIN, LOW);
@@ -380,14 +491,17 @@ void loop() {
     // Handle calibration
     if (gameState == STATE_CALIBRATING) {
         doCalibration(fb, pixels);
-        // saveCalSnapshot already updated frameStore and saved the snapshot
         esp_camera_fb_return(fb);
-        delay(10);
         return;
     }
 
-    // Detection only runs during active gameplay
-    if ((gameState != STATE_PLAYING) || calR < 0) {
+    // Compute ROI
+    int rx, ry, rw, rh;
+    computeROI(rx, ry, rw, rh);
+
+    // Not playing: draw ROI and stream
+    if ((gameState != STATE_PLAYING) || calContrastMin <= 0) {
+        drawROI(pixels, rx, ry, rw, rh);
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
         if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
@@ -398,17 +512,19 @@ void loop() {
         detector.frameCount = frameNum;
         if (now - lastPrint >= 5000) {
             Serial.printf("[idle] fps:%d frames:%d cal:%s\n",
-                detector.fps, frameNum, calR >= 0 ? "yes" : "no");
+                detector.fps, frameNum, calContrastMin > 0 ? "yes" : "no");
             lastPrint = now;
         }
-        delay(10);
         return;
     }
 
-    // --- GAME MODE: detect calibrated dice color ---
-    int rx = DETECT_W / 10, ry = DETECT_H / 10;
-    int rw = DETECT_W * 8 / 10, rh = DETECT_H * 8 / 10;
+    // --- GAME MODE: contrast-based detection ---
 
+    // Step 1: Compute live background from ROI edge band
+    int16_t bgR, bgG, bgB;
+    computeBackground(pixels, rx, ry, rw, rh, bgR, bgG, bgB);
+
+    // Step 2: Find pixels exceeding contrast threshold
     uint32_t matchCount = 0;
     int minX = DETECT_W, maxX = 0, minY = DETECT_H, maxY = 0;
 
@@ -420,9 +536,8 @@ void loop() {
             int16_t g = (px >> 5) & 0x3F;
             int16_t b = px & 0x1F;
 
-            if (abs(r - calR) <= calTolR &&
-                abs(g - calG) <= calTolG &&
-                abs(b - calB) <= calTolB) {
+            int dist = abs(r - bgR) + abs(g - bgG) + abs(b - bgB);
+            if (dist >= calContrastMin) {
                 matchCount++;
                 if (x < minX) minX = x;
                 if (x > maxX) maxX = x;
@@ -436,14 +551,14 @@ void loop() {
     int bboxH = (matchCount > 0) ? (maxY - minY + 1) : 0;
     float density = (bboxW > 0 && bboxH > 0) ? (float)matchCount / (bboxW * bboxH) : 0;
 
-    // Strict size check: must look like the calibrated dice, not a hand
-    int minPixels = max(5, (int)(calPixelCount / 3));       // at least 1/3 of calibrated
-    int maxPixels = calPixelCount * 4;                       // at most 4x calibrated
-    int maxBbox = max(calBboxW, calBboxH) * 2;              // bbox can't exceed 2x calibrated
+    // Size filters
+    int minPixels = max(5, (int)(calPixelCount / 3));
+    int maxPixels = calPixelCount * 4;
+    int maxBbox = max(calBboxW, calBboxH) * 2;
     bool diceDetected = ((int)matchCount >= minPixels)
-        && ((int)matchCount <= maxPixels)                    // TOO MANY = hand, not dice
-        && (bboxW <= maxBbox) && (bboxH <= maxBbox)          // TOO BIG = hand, not dice
-        && (density >= 0.12f);                               // must be dense cluster
+        && ((int)matchCount <= maxPixels)
+        && (bboxW <= maxBbox) && (bboxH <= maxBbox)
+        && (density >= 0.12f);
 
     // Update shared state for web console
     lastMatchCount = matchCount;
@@ -461,27 +576,22 @@ void loop() {
     else if (density < 0.12f) lastRejectReason = "SPARSE";
     else lastRejectReason = "REJECTED";
 
-    // Draw bounding box on the frame before JPEG conversion
-    if (matchCount > 0) {
-        // Green = DICE, Red = rejected
-        // RGB565 green: R=0 G=63 B=0 → 0x07E0, byte-swapped → 0xE007
-        // RGB565 red:   R=31 G=0 B=0 → 0xF800, byte-swapped → 0x00F8
-        uint16_t color = diceDetected ? 0xE007 : 0x00F8;
+    // Draw ROI rectangle
+    drawROI(pixels, rx, ry, rw, rh);
 
-        // Expand bbox by 2px padding for visibility
+    // Draw bounding box
+    if (matchCount > 0) {
+        uint16_t color = diceDetected ? 0xE007 : 0x00F8;
         int x1 = max(0, minX - 2);
         int y1 = max(0, minY - 2);
         int x2 = min(DETECT_W - 1, maxX + 2);
         int y2 = min(DETECT_H - 1, maxY + 2);
-
-        // Draw top and bottom edges
         for (int x = x1; x <= x2; x++) {
             pixels[y1 * DETECT_W + x] = color;
             if (y1 + 1 < DETECT_H) pixels[(y1+1) * DETECT_W + x] = color;
             pixels[y2 * DETECT_W + x] = color;
             if (y2 - 1 >= 0) pixels[(y2-1) * DETECT_W + x] = color;
         }
-        // Draw left and right edges
         for (int y = y1; y <= y2; y++) {
             pixels[y * DETECT_W + x1] = color;
             if (x1 + 1 < DETECT_W) pixels[y * DETECT_W + x1 + 1] = color;
@@ -490,19 +600,18 @@ void loop() {
         }
     }
 
-    // Check goal BEFORE converting to JPEG, so we can save the goal snapshot
+    // Check goal
     detector.lastChangeRatio = (float)matchCount / (rw * rh);
     detector.frameCount = frameNum;
     bool inCooldown = (now - lastGoalTimeMs) < COOLDOWN_MS;
-    bool isGoal = diceDetected && !diceWasPresent && !inCooldown && noDiceFrames > STABLE_FRAMES_NEEDED;
+    bool isGoal = diceDetected && !diceWasPresent && !inCooldown && noDiceFrames >= STABLE_FRAMES_NEEDED;
 
-    // Convert to JPEG (with rectangle drawn)
+    // Convert to JPEG
     {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
         if (frame2jpg(fb, 80, &jpg_buf, &jpg_len)) {
             frameStore.update(jpg_buf, jpg_len);
-            // Save goal snapshot
             if (isGoal && goalSnapshotBuf && goalSnapshotMutex) {
                 xSemaphoreTake(goalSnapshotMutex, portMAX_DELAY);
                 if (jpg_len <= 64 * 1024) {
@@ -535,17 +644,22 @@ void loop() {
         lastDetectLog = now;
     }
 
-    // Goal: dice appears after being absent
+    // Goal scored!
     if (isGoal) {
         lastGoalTimeMs = now;
         detector.goalCount++;
         goalJustScored = true;
 
+        // Play celebration sound (non-blocking, runs on separate core)
+        playGoalSound();
+
+        // Flash LED
         digitalWrite(LED_PIN, HIGH);
         delay(300);
         digitalWrite(LED_PIN, LOW);
 
-        Serial.printf("GOAL #%d! (%d px)\n", detector.goalCount, matchCount);
+        Serial.printf("GOAL #%d! (%d px, contrast>=%d)\n",
+            detector.goalCount, matchCount, (int)calContrastMin);
     }
 
     if (diceDetected) {
@@ -564,6 +678,4 @@ void loop() {
             !diceWasPresent ? "yes" : "no");
         lastPrint = now;
     }
-
-    delay(10);
 }

@@ -19,8 +19,10 @@ extern volatile bool goalJustScored;
 // Game state (defined in main.cpp)
 enum GameState { STATE_IDLE, STATE_CALIBRATING, STATE_PLAYING, STATE_PAUSED };
 extern volatile GameState gameState;
-extern volatile int16_t calR, calG, calB;
+extern volatile int calContrastMin;
 extern volatile int calPixelCount, calBboxW, calBboxH;
+extern volatile int roiOffsetX, roiOffsetY;
+extern volatile int roiW, roiH;
 
 // Calibration snapshot (defined in main.cpp)
 extern uint8_t* calSnapshotBuf;
@@ -94,16 +96,16 @@ static esp_err_t status_handler(httpd_req_t *req) {
 #endif
     snprintf(buf, sizeof(buf),
         "{\"goals\":%d,\"fps\":%d,\"change\":%.2f,\"frames\":%d,\"scored\":%s,"
-        "\"state\":%d,\"calibrated\":%s,\"calR\":%d,\"calG\":%d,\"calB\":%d,"
+        "\"state\":%d,\"calibrated\":%s,\"calContrast\":%d,"
         "\"calPx\":%d,\"calW\":%d,\"calH\":%d,"
         "\"matchPx\":%d,\"bboxW\":%d,\"bboxH\":%d,\"density\":%.0f,"
         "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\","
         "\"calMsg\":\"%s\",\"hasSnap\":%s,\"goalSeq\":%d,\"cdRemain\":%d,"
-        "\"role\":\"%s\",\"peer\":\"%s\"}",
+        "\"role\":\"%s\",\"peer\":\"%s\",\"roiX\":%d,\"roiY\":%d,\"roiW\":%d,\"roiH\":%d}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
-        (int)gameState, calR >= 0 ? "true" : "false",
-        (int)calR, (int)calG, (int)calB,
+        (int)gameState, calContrastMin > 0 ? "true" : "false",
+        (int)calContrastMin,
         (int)calPixelCount, (int)calBboxW, (int)calBboxH,
         (int)lastMatchCount, (int)lastBboxW, (int)lastBboxH, (float)lastDensity,
         (int)lastMinPx, (int)lastMaxPx, (int)lastMaxBbox,
@@ -111,7 +113,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         calFeedback,
         calSnapshotLen > 0 ? "true" : "false",
         (int)goalSnapshotSeq, cdRemain,
-        role, peer);
+        role, peer, (int)roiOffsetX, (int)roiOffsetY, (int)roiW, (int)roiH);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, buf, strlen(buf));
@@ -187,6 +189,108 @@ static esp_err_t deduct_handler(httpd_req_t *req) {
     return httpd_resp_send(req, "{\"ok\":true}", 11);
 }
 
+static esp_err_t cam_handler(httpd_req_t *req) {
+    char buf[128];
+    char resp[128] = "{\"ok\":true}";
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        sensor_t *s = esp_camera_sensor_get();
+        if (s) {
+            char val[16];
+            // Presets: ?preset=N
+            if (httpd_query_key_value(buf, "preset", val, sizeof(val)) == ESP_OK) {
+                int p = atoi(val);
+                if (p == 0) { // Vivid (default)
+                    s->set_saturation(s, 2); s->set_contrast(s, 2); s->set_brightness(s, 1);
+                    s->set_sharpness(s, 2); s->set_special_effect(s, 0);
+                    s->set_whitebal(s, 0); s->set_awb_gain(s, 0);
+                    digitalWrite(LED_PIN, LOW);
+                } else if (p == 1) { // Night vision (IR LEDs + high gain)
+                    s->set_saturation(s, 2); s->set_contrast(s, 2); s->set_brightness(s, 2);
+                    s->set_sharpness(s, 2); s->set_special_effect(s, 0);
+                    s->set_whitebal(s, 0); s->set_awb_gain(s, 0);
+                    s->set_gainceiling(s, (gainceiling_t)6);
+                    digitalWrite(LED_PIN, HIGH);
+                } else if (p == 2) { // Grayscale
+                    s->set_special_effect(s, 2);
+                    s->set_contrast(s, 2); s->set_brightness(s, 1);
+                    digitalWrite(LED_PIN, LOW);
+                } else if (p == 3) { // Negative
+                    s->set_special_effect(s, 1);
+                    s->set_contrast(s, 1); s->set_brightness(s, 0);
+                    digitalWrite(LED_PIN, LOW);
+                } else if (p == 4) { // High contrast B&W
+                    s->set_special_effect(s, 2);
+                    s->set_contrast(s, 2); s->set_brightness(s, 2);
+                    s->set_sharpness(s, 2);
+                    digitalWrite(LED_PIN, LOW);
+                } else if (p == 5) { // IR Night + Grayscale
+                    s->set_special_effect(s, 2);
+                    s->set_contrast(s, 2); s->set_brightness(s, 2);
+                    s->set_sharpness(s, 2);
+                    s->set_gainceiling(s, (gainceiling_t)6);
+                    digitalWrite(LED_PIN, HIGH);
+                }
+            }
+            // Individual controls: ?sat=N&con=N&bri=N&sharp=N&effect=N&ir=0|1
+            if (httpd_query_key_value(buf, "sat", val, sizeof(val)) == ESP_OK)
+                s->set_saturation(s, atoi(val));
+            if (httpd_query_key_value(buf, "con", val, sizeof(val)) == ESP_OK)
+                s->set_contrast(s, atoi(val));
+            if (httpd_query_key_value(buf, "bri", val, sizeof(val)) == ESP_OK)
+                s->set_brightness(s, atoi(val));
+            if (httpd_query_key_value(buf, "sharp", val, sizeof(val)) == ESP_OK)
+                s->set_sharpness(s, atoi(val));
+            if (httpd_query_key_value(buf, "effect", val, sizeof(val)) == ESP_OK)
+                s->set_special_effect(s, atoi(val));
+            if (httpd_query_key_value(buf, "ir", val, sizeof(val)) == ESP_OK)
+                digitalWrite(LED_PIN, atoi(val) ? HIGH : LOW);
+        }
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t roi_handler(httpd_req_t *req) {
+    char buf[128];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        char val[16];
+        if (httpd_query_key_value(buf, "dx", val, sizeof(val)) == ESP_OK)
+            roiOffsetX += atoi(val);
+        if (httpd_query_key_value(buf, "dy", val, sizeof(val)) == ESP_OK)
+            roiOffsetY += atoi(val);
+        if (httpd_query_key_value(buf, "x", val, sizeof(val)) == ESP_OK)
+            roiOffsetX = atoi(val);
+        if (httpd_query_key_value(buf, "y", val, sizeof(val)) == ESP_OK)
+            roiOffsetY = atoi(val);
+        if (httpd_query_key_value(buf, "dw", val, sizeof(val)) == ESP_OK)
+            roiW += atoi(val);
+        if (httpd_query_key_value(buf, "dh", val, sizeof(val)) == ESP_OK)
+            roiH += atoi(val);
+        if (httpd_query_key_value(buf, "w", val, sizeof(val)) == ESP_OK)
+            roiW = atoi(val);
+        if (httpd_query_key_value(buf, "h", val, sizeof(val)) == ESP_OK)
+            roiH = atoi(val);
+        // Clamp size (min 32px, max full frame)
+        if (roiW < 32) roiW = 32;
+        if (roiH < 32) roiH = 32;
+        if (roiW > 320) roiW = 320;
+        if (roiH > 240) roiH = 240;
+        // Clamp offset so ROI stays within frame
+        int maxOx = (320 - roiW) / 2, maxOy = (240 - roiH) / 2;
+        if (roiOffsetX > maxOx) roiOffsetX = maxOx;
+        if (roiOffsetX < -maxOx) roiOffsetX = -maxOx;
+        if (roiOffsetY > maxOy) roiOffsetY = maxOy;
+        if (roiOffsetY < -maxOy) roiOffsetY = -maxOy;
+    }
+    char resp[96];
+    snprintf(resp, sizeof(resp), "{\"roiX\":%d,\"roiY\":%d,\"roiW\":%d,\"roiH\":%d}",
+        (int)roiOffsetX, (int)roiOffsetY, (int)roiW, (int)roiH);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
 static esp_err_t reset_handler(httpd_req_t *req) {
     requestReset();
     httpd_resp_set_type(req, "application/json");
@@ -233,6 +337,8 @@ void startCameraServer() {
         httpd_uri_t stop_uri = { .uri = "/stop", .method = HTTP_GET, .handler = stop_handler };
         httpd_uri_t deduct_uri = { .uri = "/deduct", .method = HTTP_GET, .handler = deduct_handler };
         httpd_uri_t reset_uri = { .uri = "/reset", .method = HTTP_GET, .handler = reset_handler };
+        httpd_uri_t roi_uri = { .uri = "/roi", .method = HTTP_GET, .handler = roi_handler };
+        httpd_uri_t cam_uri = { .uri = "/cam", .method = HTTP_GET, .handler = cam_handler };
         httpd_register_uri_handler(server, &index_uri);
         httpd_register_uri_handler(server, &training_uri);
         httpd_register_uri_handler(server, &match_uri);
@@ -246,6 +352,8 @@ void startCameraServer() {
         httpd_register_uri_handler(server, &stop_uri);
         httpd_register_uri_handler(server, &deduct_uri);
         httpd_register_uri_handler(server, &reset_uri);
+        httpd_register_uri_handler(server, &roi_uri);
+        httpd_register_uri_handler(server, &cam_uri);
         Serial.println("Web server started on port 80");
     }
 
