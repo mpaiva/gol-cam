@@ -39,6 +39,11 @@ extern volatile uint32_t lastGoalTimeMs;
 
 // Actions (defined in main.cpp)
 extern void requestCalibration();
+extern volatile int goalAudioSelection;
+extern volatile int contrastThreshold;
+extern volatile int speakerVolume;
+extern void playGoalSound();
+extern volatile int audioPreview;
 extern void requestStart();
 extern void requestPause();
 extern void requestResume();
@@ -229,6 +234,16 @@ static esp_err_t cam_handler(httpd_req_t *req) {
                     s->set_sharpness(s, 2);
                     s->set_gainceiling(s, (gainceiling_t)6);
                     digitalWrite(LED_PIN, HIGH);
+                } else if (p == 6) { // Max contrast
+                    s->set_saturation(s, 2); s->set_contrast(s, 2);
+                    s->set_brightness(s, 2); s->set_sharpness(s, 2);
+                    s->set_special_effect(s, 0);
+                    s->set_whitebal(s, 0); s->set_awb_gain(s, 0);
+                    s->set_gainceiling(s, (gainceiling_t)6);
+                    s->set_exposure_ctrl(s, 1); s->set_aec2(s, 1);
+                    s->set_gain_ctrl(s, 1);
+                    s->set_raw_gma(s, 1); s->set_lenc(s, 1);
+                    digitalWrite(LED_PIN, LOW);
                 }
             }
             // Individual controls: ?sat=N&con=N&bri=N&sharp=N&effect=N&ir=0|1
@@ -240,10 +255,20 @@ static esp_err_t cam_handler(httpd_req_t *req) {
                 s->set_brightness(s, atoi(val));
             if (httpd_query_key_value(buf, "sharp", val, sizeof(val)) == ESP_OK)
                 s->set_sharpness(s, atoi(val));
+            if (httpd_query_key_value(buf, "aec", val, sizeof(val)) == ESP_OK)
+                s->set_aec_value(s, atoi(val));
+            if (httpd_query_key_value(buf, "gain", val, sizeof(val)) == ESP_OK)
+                s->set_agc_gain(s, atoi(val));
+            if (httpd_query_key_value(buf, "gceil", val, sizeof(val)) == ESP_OK)
+                s->set_gainceiling(s, (gainceiling_t)atoi(val));
+            if (httpd_query_key_value(buf, "gma", val, sizeof(val)) == ESP_OK)
+                s->set_raw_gma(s, atoi(val));
+            if (httpd_query_key_value(buf, "lenc", val, sizeof(val)) == ESP_OK)
+                s->set_lenc(s, atoi(val));
             if (httpd_query_key_value(buf, "effect", val, sizeof(val)) == ESP_OK)
                 s->set_special_effect(s, atoi(val));
             if (httpd_query_key_value(buf, "ir", val, sizeof(val)) == ESP_OK)
-                digitalWrite(LED_PIN, atoi(val) ? HIGH : LOW);
+                ledcWrite(7, atoi(val) ? 255 : 0);
         }
     }
     httpd_resp_set_type(req, "application/json");
@@ -316,11 +341,92 @@ static esp_err_t training_handler(httpd_req_t *req) {
     return httpd_resp_send(req, TRAINING_DASHBOARD_HTML, strlen(TRAINING_DASHBOARD_HTML));
 }
 
+static esp_err_t test_sound_handler(httpd_req_t *req) {
+    playGoalSound();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, "{\"ok\":true}", 11);
+}
+
+static esp_err_t volume_handler(httpd_req_t *req) {
+    char buf[32];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        char val[8];
+        if (httpd_query_key_value(buf, "val", val, sizeof(val)) == ESP_OK) {
+            int v = atoi(val);
+            if (v < 0) v = 0;
+            if (v > 100) v = 100;
+            speakerVolume = v;
+        }
+    }
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"volume\":%d}", speakerVolume);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t led_handler(httpd_req_t *req) {
+    char buf[32];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        char val[8];
+        if (httpd_query_key_value(buf, "val", val, sizeof(val)) == ESP_OK) {
+            int v = atoi(val);
+            digitalWrite(LED_PIN, v ? HIGH : LOW);
+            Serial.printf("[led] set=%d pin=%d\n", v, LED_PIN);
+        }
+    }
+    int state = digitalRead(LED_PIN);
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"led\":%d}", state);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t threshold_handler(httpd_req_t *req) {
+    char buf[32];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        char val[8];
+        if (httpd_query_key_value(buf, "val", val, sizeof(val)) == ESP_OK) {
+            int v = atoi(val);
+            if (v < 0) v = 0;
+            if (v > 255) v = 255;
+            contrastThreshold = v;
+        }
+    }
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"threshold\":%d}", contrastThreshold);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t audio_handler(httpd_req_t *req) {
+    char buf[32];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        char val[8];
+        if (httpd_query_key_value(buf, "id", val, sizeof(val)) == ESP_OK) {
+            int id = atoi(val);
+            if (id >= 0 && id <= 2) {
+                goalAudioSelection = id;
+                audioPreview = 1;
+                playGoalSound();
+            }
+        }
+    }
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"audio\":%d}", goalAudioSelection);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
 void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_uri_handlers = 16;
+    config.max_uri_handlers = 21;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {
@@ -339,6 +445,11 @@ void startCameraServer() {
         httpd_uri_t reset_uri = { .uri = "/reset", .method = HTTP_GET, .handler = reset_handler };
         httpd_uri_t roi_uri = { .uri = "/roi", .method = HTTP_GET, .handler = roi_handler };
         httpd_uri_t cam_uri = { .uri = "/cam", .method = HTTP_GET, .handler = cam_handler };
+        httpd_uri_t test_sound_uri = { .uri = "/test-sound", .method = HTTP_GET, .handler = test_sound_handler };
+        httpd_uri_t volume_uri = { .uri = "/volume", .method = HTTP_GET, .handler = volume_handler };
+        httpd_uri_t led_uri = { .uri = "/led", .method = HTTP_GET, .handler = led_handler };
+        httpd_uri_t threshold_uri = { .uri = "/threshold", .method = HTTP_GET, .handler = threshold_handler };
+        httpd_uri_t audio_uri = { .uri = "/audio", .method = HTTP_GET, .handler = audio_handler };
         httpd_register_uri_handler(server, &index_uri);
         httpd_register_uri_handler(server, &training_uri);
         httpd_register_uri_handler(server, &match_uri);
@@ -354,6 +465,11 @@ void startCameraServer() {
         httpd_register_uri_handler(server, &reset_uri);
         httpd_register_uri_handler(server, &roi_uri);
         httpd_register_uri_handler(server, &cam_uri);
+        httpd_register_uri_handler(server, &test_sound_uri);
+        httpd_register_uri_handler(server, &volume_uri);
+        httpd_register_uri_handler(server, &led_uri);
+        httpd_register_uri_handler(server, &threshold_uri);
+        httpd_register_uri_handler(server, &audio_uri);
         Serial.println("Web server started on port 80");
     }
 

@@ -13,6 +13,9 @@
 #include "goal_detector.h"
 #include "frame_store.h"
 #include "gol_sound.h"
+#include "gol_sound_flamengo.h"
+#include "gol_sound_vasco.h"
+#include "gol_sound_brasil.h"
 
 // --- WiFi credentials (from .env file via build defines) ---
 #ifndef WIFI_SSID
@@ -37,9 +40,9 @@ volatile bool goalJustScored = false;
 enum GameState { STATE_IDLE, STATE_CALIBRATING, STATE_PLAYING, STATE_PAUSED };
 volatile GameState gameState = STATE_IDLE;
 
-// Contrast-based calibration (lighting-independent)
-volatile int calContrastMin = 0;   // min distance from background to count as object (0 = not calibrated)
-volatile int calPixelCount = 0;
+// Edge-based calibration (Sobel gradient)
+volatile int calContrastMin = 0;   // Sobel gradient threshold (0 = not calibrated)
+volatile int calPixelCount = 0;    // Edge pixel count of dadinho
 volatile int calBboxW = 0, calBboxH = 0;
 
 // Detection params
@@ -55,6 +58,9 @@ volatile int lastMatchCount = 0, lastBboxW = 0, lastBboxH = 0;
 volatile int lastMinPx = 0, lastMaxPx = 0, lastMaxBbox = 0;
 volatile float lastDensity = 0;
 volatile const char* lastRejectReason = "";
+
+// Software contrast threshold (0=off, 1-255=progressively B&W)
+volatile int contrastThreshold = 30;
 
 // Calibration snapshot
 uint8_t* calSnapshotBuf = nullptr;
@@ -74,6 +80,13 @@ volatile uint32_t lastGoalTimeMs = 0;
 #define I2S_NUM I2S_NUM_0
 #define GOAL_SAMPLE_RATE 16000
 TaskHandle_t goalSoundTaskHandle = NULL;
+
+// Audio selection: 0=brasil (default/legacy), 1=flamengo, 2=vasco
+volatile int goalAudioSelection = 0;
+// Speaker volume: 0-100 (percentage)
+volatile int speakerVolume = 70;
+// Preview mode: 0=full playback, 1=5 second preview
+volatile int audioPreview = 0;
 
 void goalSoundTask(void* param) {
     i2s_config_t i2s_config = {};
@@ -100,18 +113,39 @@ void goalSoundTask(void* param) {
         if (i2s_driver_install(I2S_NUM, &i2s_config, 0, NULL) != ESP_OK) continue;
         i2s_set_pin(I2S_NUM, &pin_config);
         i2s_zero_dma_buffer(I2S_NUM);
+        // Write silence to flush all DMA buffers, then pause to let amp settle
+        {
+            int16_t silence[256] = {};
+            size_t w;
+            for (int i = 0; i < 16; i++)
+                i2s_write(I2S_NUM, silence, sizeof(silence), &w, portMAX_DELAY);
+            delay(100);
+        }
 
-        // Play the embedded goal sound 3 times
-        for (int rep = 0; rep < 3; rep++) {
-            const int16_t* src = GOL_SOUND;
-            int remaining = GOL_SOUND_SAMPLES;
-            while (remaining > 0) {
-                int chunk = min(256, remaining);
-                size_t written;
-                i2s_write(I2S_NUM, src, chunk * sizeof(int16_t), &written, portMAX_DELAY);
-                src += chunk;
-                remaining -= chunk;
-            }
+        // Select audio based on user choice
+        const int16_t* soundData;
+        int soundSamples;
+        switch (goalAudioSelection) {
+            case 1:  soundData = GOL_SOUND_FLAMENGO; soundSamples = GOL_SOUND_FLAMENGO_SAMPLES; break;
+            case 2:  soundData = GOL_SOUND_VASCO;    soundSamples = GOL_SOUND_VASCO_SAMPLES;    break;
+            default: soundData = GOL_SOUND_BRASIL;   soundSamples = GOL_SOUND_BRASIL_SAMPLES;   break;
+        }
+
+        // Play the selected goal sound (full or 5s preview)
+        int maxSamples = audioPreview ? min(soundSamples, GOAL_SAMPLE_RATE * 5) : soundSamples;
+        audioPreview = 0;
+        const int16_t* src = soundData;
+        int remaining = maxSamples;
+        int16_t scaledBuf[256];
+        while (remaining > 0) {
+            int chunk = min(256, remaining);
+            int vol = speakerVolume;
+            for (int i = 0; i < chunk; i++)
+                scaledBuf[i] = (int16_t)(((int32_t)src[i] * vol) / 100);
+            size_t written;
+            i2s_write(I2S_NUM, scaledBuf, chunk * sizeof(int16_t), &written, portMAX_DELAY);
+            src += chunk;
+            remaining -= chunk;
         }
 
         // Flush silence then uninstall — amp goes quiet
@@ -120,6 +154,10 @@ void goalSoundTask(void* param) {
         i2s_write(I2S_NUM, silence, sizeof(silence), &written, portMAX_DELAY);
         delay(50);
         i2s_driver_uninstall(I2S_NUM);
+        // Pull I2S pins low to silence the amp when idle
+        pinMode(SPK_BCLK_PIN, OUTPUT); digitalWrite(SPK_BCLK_PIN, LOW);
+        pinMode(SPK_LRC_PIN, OUTPUT);  digitalWrite(SPK_LRC_PIN, LOW);
+        pinMode(SPK_DOUT_PIN, OUTPUT); digitalWrite(SPK_DOUT_PIN, LOW);
     }
 }
 
@@ -130,6 +168,10 @@ void playGoalSound() {
 }
 
 void initSpeaker() {
+    // Hold I2S pins low to keep amp silent until audio plays
+    pinMode(SPK_BCLK_PIN, OUTPUT); digitalWrite(SPK_BCLK_PIN, LOW);
+    pinMode(SPK_LRC_PIN, OUTPUT);  digitalWrite(SPK_LRC_PIN, LOW);
+    pinMode(SPK_DOUT_PIN, OUTPUT); digitalWrite(SPK_DOUT_PIN, LOW);
     xTaskCreatePinnedToCore(goalSoundTask, "goalSound", 4096, NULL, 1, &goalSoundTaskHandle, 1);
     Serial.println("[audio] Speaker task ready");
 }
@@ -189,6 +231,7 @@ void setup() {
     delay(1000);
     Serial.println("\n=== gol-cam starting ===");
 
+    // IR LED on GPIO47 — simple digital output (no PWM to avoid amp noise)
     pinMode(LED_PIN, OUTPUT);
     digitalWrite(LED_PIN, LOW);
 
@@ -209,27 +252,26 @@ void setup() {
         Serial.println("WARN: goal snapshot alloc failed");
     }
 
-    if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_RGB565)) {
+    if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_GRAYSCALE)) {
         Serial.println("FATAL: Camera init failed!");
         while (true) delay(1000);
     }
 
     sensor_t *s = esp_camera_sensor_get();
     if (s) {
-        s->set_saturation(s, 2);
-        s->set_contrast(s, 2);
-        s->set_brightness(s, 1);
-        s->set_sharpness(s, 2);
-        s->set_whitebal(s, 0);
-        s->set_awb_gain(s, 0);
-        s->set_wb_mode(s, 0);
-        s->set_exposure_ctrl(s, 1);
-        s->set_aec2(s, 1);
-        s->set_gain_ctrl(s, 1);
-        s->set_gainceiling(s, (gainceiling_t)4);
-        s->set_lenc(s, 1);
-        s->set_raw_gma(s, 1);
-        Serial.println("[cam] Sensor configured");
+        s->set_contrast(s, 1);
+        s->set_brightness(s, -1);
+        s->set_sharpness(s, 1);
+        s->set_special_effect(s, 2); // grayscale
+        s->set_exposure_ctrl(s, 0);  // manual exposure
+        s->set_aec_value(s, 150);
+        s->set_aec2(s, 0);
+        s->set_gain_ctrl(s, 0);      // manual gain
+        s->set_agc_gain(s, 8);
+        s->set_gainceiling(s, (gainceiling_t)1);
+        s->set_raw_gma(s, 0);
+        s->set_lenc(s, 0);
+        Serial.println("[cam] Sensor configured (grayscale + high contrast edge mode)");
     }
 
     // Initialize I2S speaker
@@ -265,6 +307,22 @@ void setup() {
     Serial.println("=== gol-cam ready ===");
 }
 
+// Apply software threshold to push pixels toward B&W (grayscale version)
+void applyThreshold(uint8_t* pixels, int w, int h, int threshold) {
+    if (threshold <= 0) return;
+    int totalPx = w * h;
+    for (int i = 0; i < totalPx; i++) {
+        int v = pixels[i];
+        bool bright = v >= 128;
+        if (threshold >= 255) {
+            pixels[i] = bright ? 255 : 0;
+        } else {
+            int target = bright ? 255 : 0;
+            pixels[i] = (v * (255 - threshold) + target * threshold) / 255;
+        }
+    }
+}
+
 // Helper: compute ROI bounds
 void computeROI(int &rx, int &ry, int &rw, int &rh) {
     rw = roiW; rh = roiH;
@@ -276,34 +334,26 @@ void computeROI(int &rx, int &ry, int &rw, int &rh) {
     if (ry + rh > DETECT_H) ry = DETECT_H - rh;
 }
 
-// Helper: compute background average from ALL ROI pixels.
-// Since the background dominates the ROI area (~95%+), the average
-// naturally represents the background even when the dadinho is present.
-// This is more robust than edge-band sampling when the ROI contains
-// varying brightness (goal frame edges, reflections).
-void computeBackground(uint16_t* pixels, int rx, int ry, int rw, int rh,
-                        int16_t &bgR, int16_t &bgG, int16_t &bgB) {
-    uint32_t sR = 0, sG = 0, sB = 0;
-    uint32_t cnt = rw * rh;
-
-    for (int y = ry; y < ry + rh; y++) {
-        for (int x = rx; x < rx + rw; x++) {
-            uint16_t raw = pixels[y * DETECT_W + x];
-            uint16_t px = (raw >> 8) | (raw << 8);
-            sR += (px >> 11) & 0x1F;
-            sG += (px >> 5) & 0x3F;
-            sB += px & 0x1F;
-        }
-    }
-    if (cnt == 0) cnt = 1;
-    bgR = sR / cnt;
-    bgG = sG / cnt;
-    bgB = sB / cnt;
+// 3x3 Sobel edge detection on grayscale ROI
+// Returns edge magnitude for pixel (x,y). Caller must ensure 1px border.
+inline int sobelMag(uint8_t* pixels, int x, int y, int w) {
+    int tl = pixels[(y-1)*w + (x-1)];
+    int tc = pixels[(y-1)*w + x];
+    int tr = pixels[(y-1)*w + (x+1)];
+    int ml = pixels[y*w + (x-1)];
+    int mr = pixels[y*w + (x+1)];
+    int bl = pixels[(y+1)*w + (x-1)];
+    int bc = pixels[(y+1)*w + x];
+    int br = pixels[(y+1)*w + (x+1)];
+    int gx = -tl + tr - 2*ml + 2*mr - bl + br;
+    int gy = -tl - 2*tc - tr + bl + 2*bc + br;
+    // Approximate magnitude (avoids sqrt)
+    return abs(gx) + abs(gy);
 }
 
-// Draw ROI rectangle (cyan)
-void drawROI(uint16_t* pixels, int rx, int ry, int rw, int rh) {
-    uint16_t roiColor = 0xFF07; // cyan byte-swapped
+// Draw ROI rectangle (white border on grayscale)
+void drawROI(uint8_t* pixels, int rx, int ry, int rw, int rh) {
+    uint8_t roiColor = 255;
     int rx2 = rx + rw - 1, ry2 = ry + rh - 1;
     for (int x = rx; x <= rx2; x++) {
         pixels[ry * DETECT_W + x] = roiColor;
@@ -315,8 +365,8 @@ void drawROI(uint16_t* pixels, int rx, int ry, int rw, int rh) {
     }
 }
 
-// Save calibration snapshot JPEG with bbox drawn
-void saveCalSnapshot(camera_fb_t* fb, uint16_t* pixels, int x1, int y1, int x2, int y2, uint16_t color) {
+// Save calibration snapshot JPEG with bbox drawn (grayscale)
+void saveCalSnapshot(camera_fb_t* fb, uint8_t* pixels, int x1, int y1, int x2, int y2, uint8_t color) {
     if (!calSnapshotBuf || !calSnapshotMutex) return;
 
     if (x1 >= 0) {
@@ -348,65 +398,55 @@ void saveCalSnapshot(camera_fb_t* fb, uint16_t* pixels, int x1, int y1, int x2, 
     }
 }
 
-// Calibration: measure contrast ratio between object and background
-void doCalibration(camera_fb_t* fb, uint16_t* pixels) {
-    snprintf(calFeedback, sizeof(calFeedback), "Sampling background...");
+// Calibration: Sobel edge detection to measure dadinho edges
+void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
+    snprintf(calFeedback, sizeof(calFeedback), "Analyzing edges...");
 
     int rx, ry, rw, rh;
     computeROI(rx, ry, rw, rh);
 
-    // Step 1: Background from ROI edge band
-    int16_t bgR, bgG, bgB;
-    computeBackground(pixels, rx, ry, rw, rh, bgR, bgG, bgB);
-    Serial.printf("[cal] Background: R=%d G=%d B=%d\n", bgR, bgG, bgB);
+    // Step 1: Compute peak Sobel magnitude in ROI interior
+    int peakMag = 0;
+    int marginX = max(2, rw * 15 / 100);
+    int marginY = max(2, rh * 15 / 100);
 
-    // Step 2: Find peak contrast pixel in ROI interior
-    int bestDist = 0;
-    int marginX = rw * 15 / 100, marginY = rh * 15 / 100;
-    if (marginX < 2) marginX = 2;
-    if (marginY < 2) marginY = 2;
+    // Need 1px border for Sobel kernel
+    int sx = max(1, rx + marginX);
+    int sy = max(1, ry + marginY);
+    int ex = min(DETECT_W - 2, rx + rw - marginX);
+    int ey = min(DETECT_H - 2, ry + rh - marginY);
 
-    for (int y = ry + marginY; y < ry + rh - marginY; y++) {
-        for (int x = rx + marginX; x < rx + rw - marginX; x++) {
-            uint16_t raw = pixels[y * DETECT_W + x];
-            uint16_t px = (raw >> 8) | (raw << 8);
-            int16_t r = (px >> 11) & 0x1F;
-            int16_t g = (px >> 5) & 0x3F;
-            int16_t b = px & 0x1F;
-            int dist = abs(r - bgR) + abs(g - bgG) + abs(b - bgB);
-            if (dist > bestDist) bestDist = dist;
+    for (int y = sy; y <= ey; y++) {
+        for (int x = sx; x <= ex; x++) {
+            int mag = sobelMag(pixels, x, y, DETECT_W);
+            if (mag > peakMag) peakMag = mag;
         }
     }
 
-    Serial.printf("[cal] Peak contrast distance: %d\n", bestDist);
+    Serial.printf("[cal] Peak Sobel magnitude: %d\n", peakMag);
 
-    if (bestDist < 5) {
+    if (peakMag < 30) {
         snprintf(calFeedback, sizeof(calFeedback),
-            "FAILED: No distinct object found. Place the dadinho in the ROI and try again.");
+            "FAILED: No edges found (%d). Place dadinho with good contrast.", peakMag);
         saveCalSnapshot(fb, pixels, -1, 0, 0, 0, 0);
-        Serial.println("[cal] FAILED: no distinct object found!");
+        Serial.println("[cal] FAILED: no edges found!");
         gameState = STATE_IDLE;
         return;
     }
 
-    // Step 3: Set contrast threshold at 65% of peak distance
-    int threshold = bestDist * 65 / 100;
-    if (threshold < 3) threshold = 3;
+    // Step 2: Set edge threshold at 40% of peak magnitude
+    int threshold = peakMag * 40 / 100;
+    if (threshold < 15) threshold = 15;
 
-    // Step 4: Collect pixels exceeding threshold to measure object size
-    uint32_t objCount = 0;
+    // Step 3: Count edge pixels and measure bounding box
+    uint32_t edgeCount = 0;
     int minX = DETECT_W, maxX = 0, minY = DETECT_H, maxY = 0;
 
-    for (int y = ry + marginY; y < ry + rh - marginY; y++) {
-        for (int x = rx + marginX; x < rx + rw - marginX; x++) {
-            uint16_t raw = pixels[y * DETECT_W + x];
-            uint16_t px = (raw >> 8) | (raw << 8);
-            int16_t r = (px >> 11) & 0x1F;
-            int16_t g = (px >> 5) & 0x3F;
-            int16_t b = px & 0x1F;
-            int dist = abs(r - bgR) + abs(g - bgG) + abs(b - bgB);
-            if (dist >= threshold) {
-                objCount++;
+    for (int y = sy; y <= ey; y++) {
+        for (int x = sx; x <= ex; x++) {
+            int mag = sobelMag(pixels, x, y, DETECT_W);
+            if (mag >= threshold) {
+                edgeCount++;
                 if (x < minX) minX = x;
                 if (x > maxX) maxX = x;
                 if (y < minY) minY = y;
@@ -415,18 +455,18 @@ void doCalibration(camera_fb_t* fb, uint16_t* pixels) {
         }
     }
 
-    if (objCount < 5) {
+    if (edgeCount < 5) {
         snprintf(calFeedback, sizeof(calFeedback),
-            "FAILED: Object too small (%d px). Move dadinho closer.", (int)objCount);
+            "FAILED: Too few edges (%d px). Move dadinho closer.", (int)edgeCount);
         saveCalSnapshot(fb, pixels, -1, 0, 0, 0, 0);
-        Serial.println("[cal] FAILED: object too small!");
+        Serial.println("[cal] FAILED: too few edge pixels!");
         gameState = STATE_IDLE;
         return;
     }
 
     // Store calibration
     calContrastMin = threshold;
-    calPixelCount = objCount;
+    calPixelCount = edgeCount;
     calBboxW = maxX - minX + 1;
     calBboxH = maxY - minY + 1;
 
@@ -435,22 +475,22 @@ void doCalibration(camera_fb_t* fb, uint16_t* pixels) {
     int limitBbox = max(calBboxW, calBboxH) * 2;
 
     snprintf(calFeedback, sizeof(calFeedback),
-        "OK! Contrast threshold: %d (peak: %d). Object: %d px, %dx%d. "
+        "OK! Edge threshold: %d (peak: %d). Edges: %d px, %dx%d. "
         "Limits: %d-%d px, bbox <= %d.",
-        threshold, bestDist, (int)objCount, calBboxW, calBboxH,
+        threshold, peakMag, (int)edgeCount, calBboxW, calBboxH,
         limitMin, limitMax, limitBbox);
 
-    // Save snapshot with green bbox
+    // Save snapshot with white bbox
     int bx1 = max(0, minX - 2);
     int by1 = max(0, minY - 2);
     int bx2 = min(DETECT_W - 1, maxX + 2);
     int by2 = min(DETECT_H - 1, maxY + 2);
-    saveCalSnapshot(fb, pixels, bx1, by1, bx2, by2, 0xE007);
+    saveCalSnapshot(fb, pixels, bx1, by1, bx2, by2, 255);
 
-    Serial.printf("[cal] SUCCESS! Contrast threshold=%d, %d px, bbox=%dx%d\n",
+    Serial.printf("[cal] SUCCESS! Edge threshold=%d, %d edges, bbox=%dx%d\n",
         calContrastMin, calPixelCount, calBboxW, calBboxH);
 
-    // Flash LED + play sound to confirm
+    // Flash LED to confirm
     digitalWrite(LED_PIN, HIGH);
     delay(200);
     digitalWrite(LED_PIN, LOW);
@@ -479,14 +519,14 @@ void loop() {
         lastFpsTime = now;
     }
 
-    size_t expectedLen = DETECT_W * DETECT_H * 2;
-    if (fb->format != PIXFORMAT_RGB565 || fb->len < expectedLen) {
+    size_t expectedLen = DETECT_W * DETECT_H;
+    if (fb->format != PIXFORMAT_GRAYSCALE || fb->len < expectedLen) {
         esp_camera_fb_return(fb);
         delay(100);
         return;
     }
 
-    uint16_t* pixels = (uint16_t*)fb->buf;
+    uint8_t* pixels = fb->buf;
 
     // Handle calibration
     if (gameState == STATE_CALIBRATING) {
@@ -501,6 +541,7 @@ void loop() {
 
     // Not playing: draw ROI and stream
     if ((gameState != STATE_PLAYING) || calContrastMin <= 0) {
+        applyThreshold(pixels, DETECT_W, DETECT_H, contrastThreshold);
         drawROI(pixels, rx, ry, rw, rh);
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
@@ -518,26 +559,21 @@ void loop() {
         return;
     }
 
-    // --- GAME MODE: contrast-based detection ---
+    // --- GAME MODE: Sobel edge-based detection ---
 
-    // Step 1: Compute live background from ROI edge band
-    int16_t bgR, bgG, bgB;
-    computeBackground(pixels, rx, ry, rw, rh, bgR, bgG, bgB);
+    // Sobel on ROI only (need 1px border for kernel)
+    int sx = max(1, rx);
+    int sy = max(1, ry);
+    int ex = min(DETECT_W - 2, rx + rw - 1);
+    int ey = min(DETECT_H - 2, ry + rh - 1);
 
-    // Step 2: Find pixels exceeding contrast threshold
     uint32_t matchCount = 0;
     int minX = DETECT_W, maxX = 0, minY = DETECT_H, maxY = 0;
 
-    for (int y = ry; y < ry + rh; y++) {
-        for (int x = rx; x < rx + rw; x++) {
-            uint16_t raw = pixels[y * DETECT_W + x];
-            uint16_t px = (raw >> 8) | (raw << 8);
-            int16_t r = (px >> 11) & 0x1F;
-            int16_t g = (px >> 5) & 0x3F;
-            int16_t b = px & 0x1F;
-
-            int dist = abs(r - bgR) + abs(g - bgG) + abs(b - bgB);
-            if (dist >= calContrastMin) {
+    for (int y = sy; y <= ey; y++) {
+        for (int x = sx; x <= ex; x++) {
+            int mag = sobelMag(pixels, x, y, DETECT_W);
+            if (mag >= calContrastMin) {
                 matchCount++;
                 if (x < minX) minX = x;
                 if (x > maxX) maxX = x;
@@ -576,12 +612,13 @@ void loop() {
     else if (density < 0.12f) lastRejectReason = "SPARSE";
     else lastRejectReason = "REJECTED";
 
-    // Draw ROI rectangle
+    // Apply threshold filter then draw ROI
+    applyThreshold(pixels, DETECT_W, DETECT_H, contrastThreshold);
     drawROI(pixels, rx, ry, rw, rh);
 
-    // Draw bounding box
+    // Draw bounding box (white=detected, gray=rejected)
     if (matchCount > 0) {
-        uint16_t color = diceDetected ? 0xE007 : 0x00F8;
+        uint8_t color = diceDetected ? 255 : 128;
         int x1 = max(0, minX - 2);
         int y1 = max(0, minY - 2);
         int x2 = min(DETECT_W - 1, maxX + 2);
@@ -635,7 +672,7 @@ void loop() {
             else if ((int)matchCount < minPixels) reason = " TOO-SMALL";
             else if (density < 0.12f) reason = " SPARSE";
         }
-        Serial.printf("[detect] %d px bbox=%dx%d dens=%.0f%% (lim:%d-%d bbox<=%d)%s%s%s\n",
+        Serial.printf("[detect] %d edges bbox=%dx%d dens=%.0f%% (lim:%d-%d bbox<=%d)%s%s%s\n",
             matchCount, bboxW, bboxH, density * 100,
             minPixels, maxPixels, maxBbox,
             diceDetected ? " DICE!" : reason,
@@ -658,7 +695,7 @@ void loop() {
         delay(300);
         digitalWrite(LED_PIN, LOW);
 
-        Serial.printf("GOAL #%d! (%d px, contrast>=%d)\n",
+        Serial.printf("GOAL #%d! (%d edges, threshold>=%d)\n",
             detector.goalCount, matchCount, (int)calContrastMin);
     }
 

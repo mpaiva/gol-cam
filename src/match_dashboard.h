@@ -86,9 +86,6 @@ display:none;flex-direction:column;justify-content:center;align-items:center;z-i
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
 .btn-anula{background:#c00;color:#fff;padding:14px 30px;font-size:1.2em;
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
-.cam-filters{display:flex;gap:4px;flex-wrap:wrap;justify-content:center;margin:4px 0}
-.cam-filters .btn{padding:4px 8px;font-size:0.7em;background:#222;color:#aaa;border:1px solid #444}
-.cam-filters .btn.active{background:#0ff;color:#000;border-color:#0ff}
 .cam-sliders{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:4px 0;font-size:0.7em;color:#888}
 .cam-sliders label{display:flex;align-items:center;gap:3px}
 .cam-sliders input[type=range]{width:60px;accent-color:#0ff}
@@ -147,19 +144,21 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <div class='feed-box'>
 <div class='feed-label'><span data-i18n='match.home_goal'>Home Goal</span> <span id='st-home' class='feed-status st-idle'>...</span></div>
 <img id='cam-home'/>
-<div class='cam-filters' id='filters-home'>
-<button class='btn active' onclick="setCamFilter('home',0,this)">Vivid</button>
-<button class='btn' onclick="setCamFilter('home',1,this)">Night IR</button>
-<button class='btn' onclick="setCamFilter('home',2,this)">Gray</button>
-<button class='btn' onclick="setCamFilter('home',3,this)">Negative</button>
-<button class='btn' onclick="setCamFilter('home',4,this)">Hi-Con B&W</button>
-<button class='btn' onclick="setCamFilter('home',5,this)">IR+Gray</button>
-</div>
 <div class='cam-sliders'>
-<label>Bri<input type='range' min='-2' max='2' value='1' onchange="camAdj('home','bri',this.value)"></label>
-<label>Con<input type='range' min='-2' max='2' value='2' onchange="camAdj('home','con',this.value)"></label>
-<label>Sat<input type='range' min='-2' max='2' value='2' onchange="camAdj('home','sat',this.value)"></label>
-<label>Sharp<input type='range' min='-2' max='2' value='2' onchange="camAdj('home','sharp',this.value)"></label>
+<label>Bri<input type='range' min='-2' max='2' value='-1' onchange="camAdj('home','bri',this.value)"></label>
+<label>Con<input type='range' min='-2' max='2' value='1' onchange="camAdj('home','con',this.value)"></label>
+<label>Sharp<input type='range' min='-2' max='2' value='1' onchange="camAdj('home','sharp',this.value)"></label>
+<label>Exp<input type='range' min='0' max='1200' value='150' onchange="camAdj('home','aec',this.value)"></label>
+<label>Gain<input type='range' min='0' max='30' value='8' onchange="camAdj('home','gain',this.value)"></label>
+<label>GCeil<input type='range' min='0' max='6' value='1' onchange="camAdj('home','gceil',this.value)"></label>
+<label>Gamma<input type='checkbox' onclick="camAdj('home','gma',this.checked?1:0)"></label>
+<label>Lens<input type='checkbox' onclick="camAdj('home','lenc',this.checked?1:0)"></label>
+<label>B&amp;W<input type='range' min='0' max='255' value='30' onchange="setThreshold('home',this.value)"></label>
+<label>Vol<input type='range' min='0' max='100' value='70' onchange="setVolume('home',this.value)"><span style='cursor:pointer' onclick="testSound('home')">&#9654;</span></label>
+<label>LED<input type='checkbox' onclick="setLed('home',this.checked?1:0)"></label>
+<select style='font-size:1em;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:2px' onchange="setAudio('home',this.value)">
+<option value='0'>Brasil</option><option value='1'>Flamengo</option><option value='2'>Vasco</option>
+</select>
 </div>
 <div class='roi-controls'>
 <button class='btn' onclick="moveRoi('home',0,-8)">&#9650;</button>
@@ -168,10 +167,10 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <button class='btn' onclick="moveRoi('home',8,0)">&#9654;</button>
 <button class='btn' onclick="moveRoi('home',0,8)">&#9660;</button>
 <span style='color:#666'>|</span>
-W<button class='btn' onclick="resizeRoi('home',-2,0)">&#8722;</button>
-<button class='btn' onclick="resizeRoi('home',2,0)">&#43;</button>
-H<button class='btn' onclick="resizeRoi('home',0,-2)">&#8722;</button>
-<button class='btn' onclick="resizeRoi('home',0,2)">&#43;</button>
+W<button class='btn' onclick="resizeRoi('home',-8,0)">&#8722;</button>
+<button class='btn' onclick="resizeRoi('home',8,0)">&#43;</button>
+H<button class='btn' onclick="resizeRoi('home',0,-8)">&#8722;</button>
+<button class='btn' onclick="resizeRoi('home',0,8)">&#43;</button>
 </div>
 <div class='roi-info' id='roi-home'></div>
 <div class='ctrl-row'><button class='btn btn-cal' onclick='calibrate("home")' data-i18n='match.cal_home'>Calibrate Home</button></div>
@@ -179,19 +178,21 @@ H<button class='btn' onclick="resizeRoi('home',0,-2)">&#8722;</button>
 <div class='feed-box'>
 <div class='feed-label'><span data-i18n='match.away_goal'>Away Goal</span> <span id='st-away' class='feed-status st-idle'>...</span></div>
 <img id='cam-away'/>
-<div class='cam-filters' id='filters-away'>
-<button class='btn active' onclick="setCamFilter('away',0,this)">Vivid</button>
-<button class='btn' onclick="setCamFilter('away',1,this)">Night IR</button>
-<button class='btn' onclick="setCamFilter('away',2,this)">Gray</button>
-<button class='btn' onclick="setCamFilter('away',3,this)">Negative</button>
-<button class='btn' onclick="setCamFilter('away',4,this)">Hi-Con B&W</button>
-<button class='btn' onclick="setCamFilter('away',5,this)">IR+Gray</button>
-</div>
 <div class='cam-sliders'>
-<label>Bri<input type='range' min='-2' max='2' value='1' onchange="camAdj('away','bri',this.value)"></label>
-<label>Con<input type='range' min='-2' max='2' value='2' onchange="camAdj('away','con',this.value)"></label>
-<label>Sat<input type='range' min='-2' max='2' value='2' onchange="camAdj('away','sat',this.value)"></label>
-<label>Sharp<input type='range' min='-2' max='2' value='2' onchange="camAdj('away','sharp',this.value)"></label>
+<label>Bri<input type='range' min='-2' max='2' value='-1' onchange="camAdj('away','bri',this.value)"></label>
+<label>Con<input type='range' min='-2' max='2' value='1' onchange="camAdj('away','con',this.value)"></label>
+<label>Sharp<input type='range' min='-2' max='2' value='1' onchange="camAdj('away','sharp',this.value)"></label>
+<label>Exp<input type='range' min='0' max='1200' value='150' onchange="camAdj('away','aec',this.value)"></label>
+<label>Gain<input type='range' min='0' max='30' value='8' onchange="camAdj('away','gain',this.value)"></label>
+<label>GCeil<input type='range' min='0' max='6' value='1' onchange="camAdj('away','gceil',this.value)"></label>
+<label>Gamma<input type='checkbox' onclick="camAdj('away','gma',this.checked?1:0)"></label>
+<label>Lens<input type='checkbox' onclick="camAdj('away','lenc',this.checked?1:0)"></label>
+<label>B&amp;W<input type='range' min='0' max='255' value='30' onchange="setThreshold('away',this.value)"></label>
+<label>Vol<input type='range' min='0' max='100' value='70' onchange="setVolume('away',this.value)"><span style='cursor:pointer' onclick="testSound('away')">&#9654;</span></label>
+<label>LED<input type='checkbox' onclick="setLed('away',this.checked?1:0)"></label>
+<select style='font-size:1em;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:2px' onchange="setAudio('away',this.value)">
+<option value='0'>Brasil</option><option value='1'>Flamengo</option><option value='2'>Vasco</option>
+</select>
 </div>
 <div class='roi-controls'>
 <button class='btn' onclick="moveRoi('away',0,-8)">&#9650;</button>
@@ -200,10 +201,10 @@ H<button class='btn' onclick="resizeRoi('home',0,-2)">&#8722;</button>
 <button class='btn' onclick="moveRoi('away',8,0)">&#9654;</button>
 <button class='btn' onclick="moveRoi('away',0,8)">&#9660;</button>
 <span style='color:#666'>|</span>
-W<button class='btn' onclick="resizeRoi('away',-2,0)">&#8722;</button>
-<button class='btn' onclick="resizeRoi('away',2,0)">&#43;</button>
-H<button class='btn' onclick="resizeRoi('away',0,-2)">&#8722;</button>
-<button class='btn' onclick="resizeRoi('away',0,2)">&#43;</button>
+W<button class='btn' onclick="resizeRoi('away',-8,0)">&#8722;</button>
+<button class='btn' onclick="resizeRoi('away',8,0)">&#43;</button>
+H<button class='btn' onclick="resizeRoi('away',0,-8)">&#8722;</button>
+<button class='btn' onclick="resizeRoi('away',0,8)">&#43;</button>
 </div>
 <div class='roi-info' id='roi-away'></div>
 <div class='ctrl-row'><button class='btn btn-cal' onclick='calibrate("away")' data-i18n='match.cal_away'>Calibrate Away</button></div>
@@ -483,16 +484,29 @@ $('btn-lb-anula').onclick=function(){
   $('lightbox').style.display='none';
 };
 
-async function setCamFilter(side,preset,btn){
-  const ip=boards[side].ip;if(!ip)return;
-  await fetch('http://'+ip+'/cam?preset='+preset);
-  var container=$('filters-'+side);
-  container.querySelectorAll('.btn').forEach(function(b){b.classList.remove('active');});
-  btn.classList.add('active');}
-
 async function camAdj(side,param,val){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/cam?'+param+'='+val);}
+
+async function setThreshold(side,val){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/threshold?val='+val);}
+
+async function setVolume(side,val){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/volume?val='+val);}
+
+async function setLed(side,val){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/led?val='+val);}
+
+async function setAudio(side,id){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/audio?id='+id);}
+
+async function testSound(side){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/test-sound');}
 
 async function moveRoi(side,dx,dy){
   const ip=boards[side].ip;if(!ip)return;
