@@ -21,6 +21,7 @@ pointer-events:none;text-shadow:0 0 30px #0f0}
 cursor:pointer;font-weight:bold;transition:all 0.2s}
 .btn:active{transform:scale(0.95)}
 .btn-cal{background:#f90;color:#000}
+.drop-sel{margin:6px 0}
 .btn-start{background:#0a0;color:#fff}
 #info{color:#888;font-size:0.85em;margin:5px;text-align:center}
 #cal-info{color:#f90;font-size:0.9em;margin:5px;display:none}
@@ -74,6 +75,27 @@ line-height:1.4}
 .s-cal{background:#f90;color:#000}
 .s-play{background:#0a0;color:#fff}
 .s-pause{background:#ff0;color:#000}
+.dpad{display:grid;grid-template-columns:40px 40px 40px;grid-template-rows:40px 40px 40px;
+gap:4px;margin:8px 0}
+.dpad .btn{padding:0;width:40px;height:40px;font-size:1.2em;background:#333;color:#fff;
+border-radius:6px;display:flex;align-items:center;justify-content:center}
+.dpad .btn:active{background:#555}
+.dpad .btn-center{background:#555;font-size:0.7em}
+#roi-info{color:#0ff;font-size:0.8em;margin:2px 0}
+.drop-sel{background:#222;color:#fff;border:1px solid #555;border-radius:8px;
+padding:8px 12px;font-size:0.85em;width:100%;max-width:300px}
+.main-row{display:flex;gap:12px;width:100%;max-width:700px;align-items:flex-start;margin:8px 0}
+.cam-panel{flex:1;min-width:0}
+.cam-panel img{width:100%;margin:0}
+.ctrl-panel{display:flex;flex-direction:column;gap:6px;min-width:120px;font-size:0.75em;color:#888}
+.ctrl-panel label{display:flex;align-items:center;justify-content:space-between;gap:4px;white-space:nowrap}
+.ctrl-panel input[type=range]{width:80px;accent-color:#0ff}
+.ctrl-panel input[type=checkbox]{accent-color:#0ff}
+.ctrl-panel .ctrl-head{color:#0ff;font-weight:bold;font-size:0.9em;border-bottom:1px solid #333;padding-bottom:3px;margin-top:4px}
+@media(max-width:500px){.main-row{flex-direction:column}.ctrl-panel{flex-direction:row;flex-wrap:wrap;gap:4px 10px}}
+.roi-resize{display:flex;gap:4px;align-items:center;justify-content:center;margin:4px 0;font-size:0.8em;color:#888}
+.roi-resize .btn{padding:6px 10px;font-size:0.8em;background:#333;color:#fff;min-width:34px}
+.roi-resize .btn:active{background:#555}
 .lang-picker{position:fixed;top:8px;right:8px;display:flex;gap:4px;z-index:200}
 .lang-btn{padding:4px 8px;font-size:0.75em;border:1px solid #555;border-radius:4px;
 background:#222;color:#aaa;cursor:pointer;font-weight:bold}
@@ -97,7 +119,45 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <a href='/' data-i18n='nav.menu'>&#8592; Menu</a>
 <div id='state-badge' class='s-idle' data-i18n='train.idle'>IDLE</div>
 <div id='score' style='display:none'>0</div>
+<div class='main-row'>
+<div class='ctrl-panel'>
+<div class='ctrl-head'>Camera</div>
+<label>Bri<input type='range' min='-2' max='2' value='-1' onchange="camAdj('bri',this.value)"></label>
+<label>Con<input type='range' min='-2' max='2' value='1' onchange="camAdj('con',this.value)"></label>
+<label>Sharp<input type='range' min='-2' max='2' value='1' onchange="camAdj('sharp',this.value)"></label>
+<label>Exp<input type='range' min='0' max='1200' value='150' onchange="camAdj('aec',this.value)"></label>
+<label>Gain<input type='range' min='0' max='30' value='8' onchange="camAdj('gain',this.value)"></label>
+<label>GCeil<input type='range' min='0' max='6' value='1' onchange="camAdj('gceil',this.value)"></label>
+<label>Gamma<input type='checkbox' onclick="camAdj('gma',this.checked?1:0)"></label>
+<label>Lens<input type='checkbox' onclick="camAdj('lenc',this.checked?1:0)"></label>
+<div class='ctrl-head'>Post</div>
+<label>B&amp;W<input type='range' min='0' max='255' value='30' onchange="fetch('/threshold?val='+this.value)"></label>
+<div class='ctrl-head'>Audio</div>
+<label>Vol<input type='range' min='0' max='100' value='70' onchange="fetch('/volume?val='+this.value)"><span style='cursor:pointer' onclick="fetch('/test-sound')">&#9654;</span></label>
+<label>LED<input type='checkbox' onclick="fetch('/led?val='+(this.checked?1:0))"></label>
+</div>
+<div class='cam-panel'>
 <img id='cam'/>
+<div style='display:flex;gap:12px;justify-content:center;align-items:flex-start;margin-top:4px'>
+<div class='dpad'>
+<div></div><button class='btn' onclick="moveRoi(0,-8)">&#9650;</button><div></div>
+<button class='btn' onclick="moveRoi(-8,0)">&#9664;</button>
+<button class='btn btn-center' onclick="moveRoi(0,0,true)">RST</button>
+<button class='btn' onclick="moveRoi(8,0)">&#9654;</button>
+<div></div><button class='btn' onclick="moveRoi(0,8)">&#9660;</button><div></div>
+</div>
+<div>
+<div class='roi-resize'>
+W<button class='btn' onclick="resizeRoi(-8,0)">&#8722;</button>
+<button class='btn' onclick="resizeRoi(8,0)">&#43;</button>
+H<button class='btn' onclick="resizeRoi(0,-8)">&#8722;</button>
+<button class='btn' onclick="resizeRoi(0,8)">&#43;</button>
+</div>
+<div id='roi-info'></div>
+</div>
+</div>
+</div>
+</div>
 <div id='game-bar'>
 <div class='bar-row'>
 <button class='btn btn-pause' id='btn-pause' onclick='pauseGame()' data-i18n='train.pause'>Pause</button>
@@ -110,6 +170,11 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <div id='cd-bar'><div id='cd-fill'></div></div>
 <div id='cd-text'></div>
 </div>
+<select class='drop-sel' id='audio-sel' onchange='setAudio(this.value)'>
+<option value='0' data-i18n='train.audio_brasil'>&#127925; Brasil (Globo)</option>
+<option value='1' data-i18n='train.audio_flamengo'>&#127925; Flamengo</option>
+<option value='2' data-i18n='train.audio_vasco'>&#127925; Vasco</option>
+</select>
 <div class='idle-controls' id='idle-controls'>
 <button class='btn btn-cal' id='btn-cal' onclick='calibrate()' data-i18n='train.calibrate'>Calibrate Dice</button>
 <button class='btn btn-start' id='btn-start' onclick='startGame()' style='display:none' data-i18n='train.start'>Start Game</button>
@@ -145,7 +210,10 @@ en:{
 'train.hint_calibrated':'Calibrated! Press Start Game',
 'train.detecting_in':'Detecting in %ds...',
 'train.disconnected':'disconnected',
-'train.gol_num':'GOL #%d'
+'train.gol_num':'GOL #%d',
+'train.audio_brasil':'Brasil (Globo)',
+'train.audio_flamengo':'Flamengo',
+'train.audio_vasco':'Vasco'
 },
 pt:{
 'nav.menu':'\u2190 Menu',
@@ -170,7 +238,10 @@ pt:{
 'train.hint_calibrated':'Calibrado! Pressione Iniciar Jogo',
 'train.detecting_in':'Detectando em %ds...',
 'train.disconnected':'desconectado',
-'train.gol_num':'GOL #%d'
+'train.gol_num':'GOL #%d',
+'train.audio_brasil':'Brasil (Globo)',
+'train.audio_flamengo':'Flamengo',
+'train.audio_vasco':'Vasco'
 }
 };
 var curLang='en';
@@ -227,6 +298,19 @@ if(varBtn){varBtn.textContent=t('var.annulled');varBtn.disabled=true;
 varBtn.style.background='#555';}});
 $('lightbox').style.display='none';}
 
+async function camAdj(param,val){
+await fetch('/cam?'+param+'='+val);}
+
+async function moveRoi(dx,dy,reset){
+if(reset)await fetch('/roi?x=0&y=0');
+else await fetch('/roi?dx='+dx+'&dy='+dy);}
+
+async function resizeRoi(dw,dh){
+await fetch('/roi?dw='+dw+'&dh='+dh);}
+
+async function setAudio(id){
+await fetch('/audio?id='+id);}
+
 async function calibrate(){
 $('btn-cal').textContent=t('train.calibrating');
 $('btn-cal').disabled=true;
@@ -261,6 +345,7 @@ $('game-bar').style.display=inGame?'block':'none';
 $('btn-pause').style.display=playing?'':'none';
 $('btn-resume').style.display=paused?'':'none';
 $('idle-controls').style.display=idle?'':'none';
+$('audio-sel').style.display=idle?'':'none';
 $('btn-start').style.display=(idle&&cal)?'':'none';
 $('btn-cal').style.display=idle?'':'none';}
 
@@ -287,7 +372,8 @@ $('cd-fill').style.width=(d.cdRemain/100)+'%';
 }else{$('countdown').style.display='none';}
 if(d.calibrated){$('cal-info').style.display='';
 $('cal-info').textContent='Dice: '+d.calPx+'px, '+d.calW+'x'+d.calH+
-'px (RGB565: '+d.calR+','+d.calG+','+d.calB+')';}
+'px (contrast>='+d.calContrast+')';}
+if(d.roiW!==undefined)$('roi-info').textContent='ROI: '+d.roiW+'x'+d.roiH+' offset:'+d.roiX+','+d.roiY;
 $('score').textContent=d.goals;
 if(d.state===2||d.state===3)$('info').textContent='fps:'+d.fps;
 if(d.state===1)log('Calibrating...','log-cal');
