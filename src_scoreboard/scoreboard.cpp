@@ -51,17 +51,12 @@ bool estadoAntUP1 = HIGH, estadoAntDW1 = HIGH, estadoAntUP2 = HIGH, estadoAntDW2
 unsigned long tempoUP1 = 0, tempoDW1 = 0, tempoUP2 = 0, tempoDW2 = 0;
 const unsigned long debounceMs = 120;
 
-// Display brightness 0-15. Phone-oriented power banks shut off when steady
-// draw stays under their idle threshold (~50-150 mA depending on model). At
-// brightness 3 with both displays showing zeros the steady draw falls under
-// that threshold; even brief brightness pulses up to 15 didn't help (banks
-// look at averaged or minimum current, not peaks).
-//
-// Solution: keep the displays bright enough that the steady draw is solidly
-// above any threshold. 13 ≈ 90% of max — very visible, draws ~600 mA total
-// with both sides lit, which any bank treats as "real load". On wall-USB it
-// looks great; on battery it survives.
-const uint8_t NORMAL_BRIGHTNESS = 13;
+// Display brightness 0-15. Comfortable, well-readable in any light.
+// (Bench testing showed phone-oriented power banks kill the rail at ~10s
+// regardless of draw — the issue is the bank, not steady-state current —
+// so there's no point pinning brightness near max. Use a wall USB adapter
+// or an "always-on" bank for portable operation.)
+const uint8_t NORMAL_BRIGHTNESS = 8;
 
 // ---------- 7×8 digit font (rotated 90° later) ----------
 const uint8_t digitos[10][8] = {
