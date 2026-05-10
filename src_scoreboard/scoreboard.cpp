@@ -186,13 +186,15 @@ static void handleResetApi() {
 // ---------- Wi-Fi (STA) ----------
 static void iniciarWiFi() {
   WiFi.mode(WIFI_STA);
-#ifdef WIFI_STATIC_IP
+  WiFi.setHostname("gol-placar");
+#ifdef SCOREBOARD_STATIC_IP
   IPAddress staticIP, gateway, subnet;
-  staticIP.fromString(WIFI_STATIC_IP);
-  gateway.fromString(WIFI_GATEWAY);
-  subnet.fromString(WIFI_SUBNET);
-  WiFi.config(staticIP, gateway, subnet);
-  Serial.printf("[wifi] static IP requested: %s\n", WIFI_STATIC_IP);
+  staticIP.fromString(SCOREBOARD_STATIC_IP);
+  gateway.fromString(SCOREBOARD_GATEWAY);
+  subnet.fromString(SCOREBOARD_SUBNET);
+  IPAddress dns(8, 8, 8, 8);
+  WiFi.config(staticIP, gateway, subnet, dns);
+  Serial.printf("[wifi] static IP requested: %s\n", SCOREBOARD_STATIC_IP);
 #endif
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.printf("[wifi] connecting to %s", WIFI_SSID);
