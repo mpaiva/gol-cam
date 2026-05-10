@@ -108,32 +108,151 @@ static void zeraB() { contB = 0; atualizarDisplays(); }
 static void resetGeral() { contA = 0; contB = 0; atualizarDisplays(); }
 
 // ---------- Web ----------
+// Static HTML/JS — score updates via /status polling, no meta-refresh.
+// Team names stored in browser localStorage (defaults A / B).
+static const char PAGINA_HTML[] PROGMEM = R"PG(<!DOCTYPE html><html><head><meta charset='utf-8'>
+<meta name='viewport' content='width=device-width,initial-scale=1,viewport-fit=cover'>
+<title>gol-placar</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{
+--bg:#070707;--card:#141414;--border:#262626;--muted:#888;
+--a:#2d89ef;--a-glow:rgba(45,137,239,0.45);
+--b:#e81123;--b-glow:rgba(232,17,35,0.45);
+--ok:#0a0;--warn:#c00
+}
+html,body{height:100%}
+body{font-family:system-ui,-apple-system,sans-serif;background:var(--bg);color:#fff;
+min-height:100vh;display:flex;flex-direction:column;overflow:hidden;
+background-image:radial-gradient(ellipse at top,#1a1a1a 0%,var(--bg) 60%)}
+header{display:flex;align-items:center;justify-content:space-between;
+padding:10px 16px;border-bottom:1px solid var(--border);font-size:0.85em}
+header h1{font-size:1em;font-weight:700;letter-spacing:1px;color:#aaa}
+#wifi{display:flex;align-items:center;gap:6px;color:var(--muted);font-family:ui-monospace,monospace;font-size:0.75em}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+main{flex:1;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;
+gap:12px;padding:8px 16px;min-height:0;position:relative}
+.side{text-align:center;cursor:default;padding:12px;border-radius:18px;transition:background 0.4s}
+.side .name{font-size:0.95em;letter-spacing:3px;color:var(--muted);font-weight:700;
+margin-bottom:8px;cursor:text;padding:4px 10px;border-radius:6px;display:inline-block;min-width:80px}
+.side .name:hover{background:rgba(255,255,255,0.05)}
+.side .name[contenteditable=true]:focus{outline:1px dashed currentColor;background:rgba(0,0,0,0.4)}
+.side .num{font-size:clamp(7em,28vw,18em);font-weight:900;line-height:0.85;
+font-variant-numeric:tabular-nums;letter-spacing:-0.03em}
+.side.a .num{color:var(--a);text-shadow:0 0 30px var(--a-glow)}
+.side.b .num{color:var(--b);text-shadow:0 0 30px var(--b-glow)}
+.side.a .name{color:var(--a)}
+.side.b .name{color:var(--b)}
+.side.flash{animation:flash 1.2s ease-out}
+.side.a.flash{background:var(--a-glow)}
+.side.b.flash{background:var(--b-glow)}
+@keyframes flash{
+0%{transform:scale(1)} 30%{transform:scale(1.05)} 60%{transform:scale(0.99)} 100%{transform:scale(1)}
+}
+.x{font-size:clamp(2em,8vw,5em);color:#333;font-weight:300;align-self:center}
+footer{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px 14px;border-top:1px solid var(--border)}
+footer .row{display:flex;gap:6px;width:100%}
+.btn{flex:1;padding:14px 8px;border:none;border-radius:10px;font-size:0.95em;
+font-weight:700;cursor:pointer;color:#fff;transition:transform 0.08s,filter 0.15s;letter-spacing:0.5px}
+.btn:active{transform:scale(0.96)}
+.btn-a{background:var(--a);box-shadow:0 0 18px rgba(45,137,239,0.25) inset}
+.btn-b{background:var(--b);box-shadow:0 0 18px rgba(232,17,35,0.25) inset}
+.btn-mini{flex:0 0 auto;background:#222;color:#888;font-size:0.72em;font-weight:600;
+padding:8px 12px;letter-spacing:1px}
+.btn-reset{background:#1d1d1d;color:#888;font-size:0.78em;border:1px solid #2a2a2a}
+@media(orientation:landscape) and (max-height:540px){
+header{padding:6px 12px}
+main{padding:4px 12px}
+.side .num{font-size:clamp(6em,30vh,14em)}
+}
+@media(orientation:portrait){
+main{grid-template-columns:1fr;grid-template-rows:1fr auto 1fr;gap:0}
+.x{transform:rotate(90deg)}
+.side .num{font-size:clamp(8em,40vw,16em)}
+}
+.flash-overlay{position:fixed;inset:0;pointer-events:none;opacity:0;
+transition:opacity 0.4s;z-index:99}
+.flash-overlay.a{background:radial-gradient(circle,var(--a-glow) 0%,transparent 70%)}
+.flash-overlay.b{background:radial-gradient(circle,var(--b-glow) 0%,transparent 70%)}
+.flash-overlay.on{opacity:1}
+</style></head><body>
+<header>
+<h1>GOL · PLACAR</h1>
+<div id='wifi'><span class='dot'></span><span id='ip'>%IP%</span></div>
+</header>
+<div id='flash' class='flash-overlay'></div>
+<main>
+<div class='side a' id='side-a'>
+<div class='name' contenteditable='true' spellcheck='false' data-side='a'>A</div>
+<div class='num' id='num-a'>0</div>
+</div>
+<div class='x'>×</div>
+<div class='side b' id='side-b'>
+<div class='name' contenteditable='true' spellcheck='false' data-side='b'>B</div>
+<div class='num' id='num-b'>0</div>
+</div>
+</main>
+<footer>
+<div class='row'>
+<button class='btn btn-a' onclick="bump('a')">A +1</button>
+<button class='btn btn-b' onclick="bump('b')">B +1</button>
+</div>
+<div class='row' style='margin-top:6px'>
+<button class='btn btn-mini' onclick="zero('a')">A&nbsp;0</button>
+<button class='btn btn-reset' onclick="resetAll()">RESET ALL</button>
+<button class='btn btn-mini' onclick="zero('b')">B&nbsp;0</button>
+</div>
+</footer>
+<script>
+const $=id=>document.getElementById(id);
+let state={a:0,b:0};
+['a','b'].forEach(s=>{
+ const el=document.querySelector(`.name[data-side="${s}"]`);
+ const saved=localStorage.getItem('placar-name-'+s);
+ if(saved)el.textContent=saved;
+ el.addEventListener('blur',()=>{
+   const v=el.textContent.trim().slice(0,8).toUpperCase()||(s==='a'?'A':'B');
+   el.textContent=v;
+   localStorage.setItem('placar-name-'+s,v);
+ });
+ el.addEventListener('keydown',e=>{
+   if(e.key==='Enter'){e.preventDefault();el.blur();}
+ });
+});
+function flash(side){
+ const e=$('side-'+side);
+ e.classList.remove('flash');void e.offsetWidth;e.classList.add('flash');
+ const o=$('flash');o.className='flash-overlay '+side+' on';
+ setTimeout(()=>o.className='flash-overlay '+side,400);
+}
+function render(d){
+ if(d.a!==state.a){state.a=d.a;$('num-a').textContent=d.a;}
+ if(d.b!==state.b){state.b=d.b;$('num-b').textContent=d.b;}
+ if(d.ip)$('ip').textContent=d.ip;
+}
+async function bump(s){
+ try{const r=await fetch('/goal?side='+s);const d=await r.json();
+ if(d.ok){flash(s);render({a:d.a,b:d.b});}}catch(e){}
+}
+async function zero(s){
+ try{await fetch(s==='a'?'/az':'/bz');poll();}catch(e){}
+}
+async function resetAll(){
+ try{await fetch('/api/reset');poll();}catch(e){}
+}
+async function poll(){
+ try{const r=await fetch('/status',{cache:'no-store'});
+ const d=await r.json();
+ if(d.a>state.a)flash('a');
+ if(d.b>state.b)flash('b');
+ render(d);}catch(e){}
+}
+setInterval(poll,1000);poll();
+</script></body></html>)PG";
+
 static String pagina() {
-  String h;
-  h += "<!DOCTYPE html><html><head><meta charset='utf-8'>";
-  h += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
-  h += "<meta http-equiv='refresh' content='2'>";
-  h += "<title>Placar</title>";
-  h += "<style>"
-       "body{font-family:system-ui,sans-serif;text-align:center;background:#0a0a0a;color:#fff;margin:0;padding:24px}"
-       ".box{background:#161616;border:1px solid #262626;padding:24px;border-radius:14px;max-width:420px;margin:auto}"
-       "h1{margin:0 0 12px;font-size:1.4em;letter-spacing:0.5px}"
-       ".score{font-size:5em;font-weight:800;margin:14px 0;color:#0a0;text-shadow:0 0 20px rgba(0,255,80,0.4)}"
-       ".x{color:#444;font-size:0.6em;margin:0 12px;vertical-align:middle}"
-       "form{margin:6px 0}"
-       "button{width:100%;padding:14px;font-size:1.05em;border:none;border-radius:10px;font-weight:700;cursor:pointer}"
-       ".a{background:#2d89ef;color:#fff}.b{background:#e81123;color:#fff}.r{background:#444;color:#fff}"
-       ".info{font-size:0.78em;color:#888;margin-top:14px}"
-       "</style></head><body>";
-  h += "<div class='box'><h1>Placar</h1>";
-  h += "<div class='score'>" + String(contA) + "<span class='x'>×</span>" + String(contB) + "</div>";
-  h += "<form action='/a+'><button class='a'>A +</button></form>";
-  h += "<form action='/az'><button class='a'>A RESET</button></form>";
-  h += "<form action='/b+'><button class='b'>B +</button></form>";
-  h += "<form action='/bz'><button class='b'>B RESET</button></form>";
-  h += "<form action='/reset'><button class='r'>RESET GERAL</button></form>";
-  h += "<div class='info'>" + WiFi.localIP().toString() + "</div>";
-  h += "</div></body></html>";
+  String h(PAGINA_HTML);
+  h.replace("%IP%", WiFi.localIP().toString());
   return h;
 }
 
