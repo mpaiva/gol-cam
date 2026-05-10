@@ -51,6 +51,14 @@ bool estadoAntUP1 = HIGH, estadoAntDW1 = HIGH, estadoAntUP2 = HIGH, estadoAntDW2
 unsigned long tempoUP1 = 0, tempoDW1 = 0, tempoUP2 = 0, tempoDW2 = 0;
 const unsigned long debounceMs = 120;
 
+// Display brightness 0-15. Higher = more current = keeps battery banks happy.
+// 5 is visible but not blinding; the keep-alive pulse below briefly hits 15
+// every 2.5s to give cheap power banks a current spike so they don't auto-off.
+const uint8_t NORMAL_BRIGHTNESS = 5;
+const uint8_t PULSE_BRIGHTNESS  = 15;
+const unsigned long PULSE_INTERVAL_MS = 2500;
+const unsigned long PULSE_DURATION_MS = 35;
+
 // ---------- 7×8 digit font (rotated 90° later) ----------
 const uint8_t digitos[10][8] = {
   {0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0x00},
@@ -366,8 +374,8 @@ void setup() {
 
   dspA.begin();
   dspB.begin();
-  dspA.control(MD_MAX72XX::INTENSITY, 3);
-  dspB.control(MD_MAX72XX::INTENSITY, 3);
+  dspA.control(MD_MAX72XX::INTENSITY, NORMAL_BRIGHTNESS);
+  dspB.control(MD_MAX72XX::INTENSITY, NORMAL_BRIGHTNESS);
   dspA.clear();
   dspB.clear();
   atualizarDisplays();
@@ -393,7 +401,28 @@ void setup() {
   Serial.println("=== placar-eletronico ready ===");
 }
 
+// Briefly pulses the displays to max brightness every PULSE_INTERVAL_MS so
+// power banks with low-current auto-off (most phone-oriented banks shut down
+// after ~10s when draw stays under ~100 mA) keep the rail powered. The pulse
+// is short enough to read as a soft "heartbeat" rather than a flicker.
+static void keepAlivePulse() {
+  static unsigned long lastPulseStart = 0;
+  static bool pulsing = false;
+  unsigned long now = millis();
+  if (!pulsing && now - lastPulseStart >= PULSE_INTERVAL_MS) {
+    dspA.control(MD_MAX72XX::INTENSITY, PULSE_BRIGHTNESS);
+    dspB.control(MD_MAX72XX::INTENSITY, PULSE_BRIGHTNESS);
+    pulsing = true;
+    lastPulseStart = now;
+  } else if (pulsing && now - lastPulseStart >= PULSE_DURATION_MS) {
+    dspA.control(MD_MAX72XX::INTENSITY, NORMAL_BRIGHTNESS);
+    dspB.control(MD_MAX72XX::INTENSITY, NORMAL_BRIGHTNESS);
+    pulsing = false;
+  }
+}
+
 void loop() {
   server.handleClient();
   lerBotoes();
+  keepAlivePulse();
 }
