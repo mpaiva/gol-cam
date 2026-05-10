@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
 #include "esp_camera.h"
 #include "img_converters.h"
 #include "driver/i2s.h"
@@ -235,6 +236,53 @@ void playGoalSound() {
     }
 }
 
+// Which side of the scoreboard this camera advances. Resolved once at startup
+// from .env: SCOREBOARD_SIDE override > BOARD_ROLE rule > default 'a'.
+//   home camera → opponent (away) scores → side B
+//   away camera → home scores            → side A
+//   single camera (no role)              → side A
+static char scoreboardSide = 'a';
+
+static void resolveScoreboardSide() {
+#ifdef SCOREBOARD_SIDE
+    const char* s = SCOREBOARD_SIDE;
+    if (s && (s[0] == 'a' || s[0] == 'A')) { scoreboardSide = 'a'; return; }
+    if (s && (s[0] == 'b' || s[0] == 'B')) { scoreboardSide = 'b'; return; }
+#endif
+#ifdef BOARD_ROLE
+    const char* r = BOARD_ROLE;
+    if (r && r[0] == 'h') { scoreboardSide = 'b'; return; }  // home cam → side B
+    if (r && r[0] == 'a') { scoreboardSide = 'a'; return; }  // away cam → side A
+#endif
+    scoreboardSide = 'a';
+}
+
+#ifdef SCOREBOARD_IP
+// Background HTTP push so the goal-detection loop never blocks on the network.
+// The task self-deletes after firing one request.
+static void scoreboardPushTask(void* param) {
+    char side = (char)(intptr_t)param;
+    HTTPClient http;
+    String url = String("http://") + SCOREBOARD_IP + "/goal?side=" + side;
+    if (http.begin(url)) {
+        http.setTimeout(2000);
+        int code = http.GET();
+        Serial.printf("[score] push side=%c → HTTP %d\n", side, code);
+        http.end();
+    } else {
+        Serial.println("[score] http.begin failed");
+    }
+    vTaskDelete(NULL);
+}
+
+void pushGoalToScoreboard() {
+    xTaskCreatePinnedToCore(scoreboardPushTask, "scorePush", 4096,
+                            (void*)(intptr_t)scoreboardSide, 1, NULL, 0);
+}
+#else
+void pushGoalToScoreboard() {}  // SCOREBOARD_IP not configured → no-op
+#endif
+
 void initSpeaker() {
     // Hold I2S pins low to keep amp silent until audio plays
     pinMode(SPK_BCLK_PIN, OUTPUT); digitalWrite(SPK_BCLK_PIN, LOW);
@@ -356,6 +404,14 @@ void setup() {
 
     // Initialize I2S speaker
     initSpeaker();
+
+    // Decide which scoreboard side this camera advances on a goal
+    resolveScoreboardSide();
+#ifdef SCOREBOARD_IP
+    Serial.printf("[score] target=%s side=%c\n", SCOREBOARD_IP, scoreboardSide);
+#else
+    Serial.println("[score] no SCOREBOARD_IP configured — scoreboard pushes disabled");
+#endif
 
     // Static IP configuration (optional — set in .env)
 #ifdef WIFI_STATIC_IP
@@ -944,6 +1000,9 @@ void loop() {
 
         // Play celebration sound (non-blocking, runs on separate core)
         playGoalSound();
+
+        // Push to the electronic scoreboard (non-blocking task, ~2s timeout)
+        pushGoalToScoreboard();
 
         // Flash LED
         digitalWrite(LED_PIN, HIGH);

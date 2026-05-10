@@ -17,6 +17,10 @@ max-width:540px;border-bottom:1px solid var(--border)}
 header .back{color:var(--accent);text-decoration:none;font-size:0.9em;flex:0 0 auto}
 header h1{margin:0;font-size:1.25em;flex:1;text-align:center;letter-spacing:0.5px}
 #state-badge{font-size:0.7em;padding:3px 10px;border-radius:10px;font-weight:600;letter-spacing:0.5px}
+#sb-badge{font-size:0.65em;padding:3px 8px;border-radius:10px;font-weight:600;letter-spacing:0.3px;cursor:default}
+.sb-on{background:rgba(0,170,0,0.18);color:#0f0;border:1px solid rgba(0,255,0,0.3)}
+.sb-off{background:rgba(150,150,150,0.15);color:#666;border:1px solid #333}
+.sb-err{background:rgba(200,0,0,0.18);color:#f44;border:1px solid rgba(255,0,0,0.3)}
 .s-idle{background:#2a2a2a;color:#aaa}
 .s-cal{background:var(--orange);color:#000}
 .s-play{background:var(--green);color:#fff}
@@ -135,6 +139,7 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <a class='back' href='/' data-i18n='nav.menu'>&#8592; Menu</a>
 <h1>gol-cam</h1>
 <div id='state-badge' class='s-idle' data-i18n='train.idle'>IDLE</div>
+<div id='sb-badge' class='sb-off' title='scoreboard'>📊 …</div>
 </header>
 <main>
 <div id='score' style='display:none'>0</div>
@@ -200,6 +205,12 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <div class='group-title' data-i18n='train.audio_section'>Audio</div>
 <label>Vol<input type='range' min='0' max='100' value='70' onchange="fetch('/volume?val='+this.value)"><span class='play' onclick="fetch('/test-sound')">&#9654;</span></label>
 <label>LED<input type='checkbox' onclick="fetch('/led?val='+(this.checked?1:0))"></label>
+<div class='group-title' data-i18n='train.scoreboard_section'>Scoreboard</div>
+<label style='grid-column:1 / -1;justify-content:flex-start;gap:8px'>
+<button onclick="fetch('/test-goal')" style='padding:5px 10px;background:#36c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85em'>↗ Test Push</button>
+<button onclick="resetScoreboard()" style='padding:5px 10px;background:#444;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:0.85em'>Reset Placar</button>
+<span id='sb-info' style='font-family:ui-monospace,monospace;color:var(--accent);font-size:0.75em'></span>
+</label>
 </div>
 </div>
 </details>
@@ -243,7 +254,7 @@ en:{
 'train.expert':'⚙ Expert Settings',
 'train.cam_section':'Camera',
 'train.post_section':'Post-process',
-'train.audio_section':'Audio',
+'train.audio_section':'Audio','train.scoreboard_section':'Scoreboard',
 'train.goals_section':'Goals',
 'train.console_section':'Console'
 },
@@ -276,7 +287,7 @@ pt:{
 'train.expert':'⚙ Avançado',
 'train.cam_section':'Câmera',
 'train.post_section':'Pós-processo',
-'train.audio_section':'Áudio',
+'train.audio_section':'Áudio','train.scoreboard_section':'Placar',
 'train.goals_section':'Gols',
 'train.console_section':'Console'
 }
@@ -335,6 +346,28 @@ varBtn.style.background='#555';}});
 $('lightbox').style.display='none';}
 
 async function camAdj(param,val){await fetch('/cam?'+param+'='+val);}
+
+let scoreboardIp='';
+async function pollScoreboard(){
+  if(!scoreboardIp){$('sb-badge').textContent='📊 –';$('sb-badge').className='sb-off';return;}
+  try{
+    const r=await fetch('http://'+scoreboardIp+'/status',{signal:AbortSignal.timeout(2500)});
+    const d=await r.json();
+    $('sb-badge').textContent='📊 '+d.a+'×'+d.b;
+    $('sb-badge').className='sb-on';
+    $('sb-badge').title='scoreboard '+scoreboardIp+' — A:'+d.a+' B:'+d.b;
+    if($('sb-info'))$('sb-info').textContent=scoreboardIp+'  A:'+d.a+' B:'+d.b;
+  }catch(e){
+    $('sb-badge').textContent='📊 ⚠';
+    $('sb-badge').className='sb-err';
+    $('sb-badge').title='scoreboard unreachable: '+scoreboardIp;
+  }
+}
+async function resetScoreboard(){
+  if(!scoreboardIp)return;
+  try{await fetch('http://'+scoreboardIp+'/api/reset');pollScoreboard();}catch(e){}
+}
+setInterval(pollScoreboard,2000);
 async function moveRoi(dx,dy,reset){
 if(reset)await fetch('/roi?x=0&y=0');
 else await fetch('/roi?dx='+dx+'&dy='+dy);}
@@ -443,6 +476,7 @@ $('cd-fill').style.width=(d.cdRemain/100)+'%';
 if(d.calibrated){$('cal-info').style.display='';
 $('cal-info').textContent='Dice: '+d.calPx+'px, '+d.calW+'x'+d.calH+
 'px (contrast>='+d.calContrast+')';}
+if(d.scoreboardIp&&d.scoreboardIp!==scoreboardIp){scoreboardIp=d.scoreboardIp;pollScoreboard();}
 if(d.roiW!==undefined){
 $('roi-info').textContent=d.roiW+'×'+d.roiH+' @'+d.roiX+','+d.roiY;
 const roiX=160-d.roiW/2+(d.roiX||0), roiY=120-d.roiH/2+(d.roiY||0);

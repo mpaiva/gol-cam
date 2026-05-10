@@ -59,6 +59,10 @@ font-size:0.85em;color:var(--muted);margin-bottom:6px;padding:0 4px}
 .st-online{background:var(--green);color:#fff}
 .st-offline{background:var(--red);color:#fff}
 .st-idle{background:#2a2a2a;color:#aaa}
+#sb-badge{font-size:0.7em;padding:3px 10px;border-radius:10px;font-weight:600;letter-spacing:0.3px;cursor:default}
+.sb-on{background:rgba(0,170,0,0.18);color:#0f0;border:1px solid rgba(0,255,0,0.3)}
+.sb-off{background:rgba(150,150,150,0.15);color:#666;border:1px solid #333}
+.sb-err{background:rgba(200,0,0,0.18);color:#f44;border:1px solid rgba(255,0,0,0.3)}
 .cam-wrap{position:relative;width:100%;line-height:0;border-radius:8px;overflow:hidden}
 .cam-wrap img{width:100%;display:block}
 .cam-wrap svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
@@ -151,7 +155,7 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <header>
 <a class='back' href='/' data-i18n='nav.menu'>← Menu</a>
 <h1 data-i18n='match.title'>gol-cam MATCH</h1>
-<span style='flex:0 0 60px'></span>
+<div id='sb-badge' class='sb-off' title='scoreboard'>📊 …</div>
 </header>
 
 <div id='config'>
@@ -420,6 +424,7 @@ async function pollBoard(side){
     else{el.textContent=t('match.cal_state');el.className='feed-status st-idle';}
     var ri=$(('roi-'+side));
     if(ri&&d.roiW!==undefined)ri.textContent=d.roiW+'×'+d.roiH+' @'+d.roiX+','+d.roiY;
+    if(d.scoreboardIp&&d.scoreboardIp!==scoreboardIp){scoreboardIp=d.scoreboardIp;pollScoreboard();}
     var ov=$(('ov-'+side));
     if(ov&&d.roiW!==undefined){
       var roi=ov.querySelector('.ov-roi');
@@ -591,11 +596,29 @@ function matchReset(){
     fetch('http://'+boards.home.ip+'/reset').catch(()=>{}),
     fetch('http://'+boards.away.ip+'/reset').catch(()=>{})
   ]);
+  if(scoreboardIp)fetch('http://'+scoreboardIp+'/api/reset').catch(()=>{});
   boards.home.goals=0;boards.home.goalSeq=0;boards.home.state=-1;
   boards.away.goals=0;boards.away.goalSeq=0;boards.away.state=-1;
   $('score-home').textContent='0';$('score-away').textContent='0';
   $('gol-log').innerHTML='';
 }
+
+let scoreboardIp='';
+async function pollScoreboard(){
+  if(!scoreboardIp){$('sb-badge').textContent='📊 –';$('sb-badge').className='sb-off';return;}
+  try{
+    const r=await fetch('http://'+scoreboardIp+'/status',{signal:AbortSignal.timeout(2500)});
+    const d=await r.json();
+    $('sb-badge').textContent='📊 '+d.a+'×'+d.b;
+    $('sb-badge').className='sb-on';
+    $('sb-badge').title='scoreboard '+scoreboardIp+' — A:'+d.a+' B:'+d.b;
+  }catch(e){
+    $('sb-badge').textContent='📊 ⚠';
+    $('sb-badge').className='sb-err';
+    $('sb-badge').title='scoreboard unreachable: '+scoreboardIp;
+  }
+}
+setInterval(pollScoreboard,2000);
 
 document.addEventListener('DOMContentLoaded',function(){setLang(curLang);});
 </script></body></html>
