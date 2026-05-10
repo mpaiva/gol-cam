@@ -313,6 +313,12 @@ static void handleResetApi() {
 static void iniciarWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname("gol-placar");
+  // Lower TX power and enable modem-sleep to soften the current spikes
+  // that trip cheap power-bank overcurrent protection.
+  // 8.5 dBm ≈ 10 mW (vs 20 dBm/100 mW default) — peak current ~150 mA
+  // instead of ~400 mA during association/TX. Range still > 30 m indoors.
+  WiFi.setTxPower(WIFI_POWER_8_5dBm);
+  WiFi.setSleep(WIFI_PS_MIN_MODEM);
 #ifdef SCOREBOARD_STATIC_IP
   IPAddress staticIP, gateway, subnet;
   staticIP.fromString(SCOREBOARD_STATIC_IP);
