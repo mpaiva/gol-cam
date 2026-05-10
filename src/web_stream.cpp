@@ -17,7 +17,7 @@ extern FrameStore frameStore;
 extern volatile bool goalJustScored;
 
 // Game state (defined in main.cpp)
-enum GameState { STATE_IDLE, STATE_CALIBRATING, STATE_PLAYING, STATE_PAUSED };
+enum GameState { STATE_IDLE, STATE_CALIBRATING, STATE_PLAYING, STATE_PAUSED, STATE_AUTOTUNE };
 extern volatile GameState gameState;
 extern volatile int calContrastMin;
 extern volatile int calPixelCount, calBboxW, calBboxH;
@@ -39,11 +39,17 @@ extern volatile uint32_t lastGoalTimeMs;
 
 // Actions (defined in main.cpp)
 extern void requestCalibration();
-extern volatile int goalAudioSelection;
+extern void requestAutotune();
 extern volatile int contrastThreshold;
 extern volatile int speakerVolume;
 extern void playGoalSound();
-extern volatile int audioPreview;
+extern volatile int autotuneStage, autotuneStep, autotuneTotalSteps, autotuneBestScore, autotuneDone;
+extern volatile int autotuneBestGain, autotuneBestGceil, autotuneBestAec;
+extern volatile int autotuneBestGma, autotuneBestLenc;
+extern volatile int autotuneBestCon, autotuneBestBri, autotuneBestSharp, autotuneBestThresh;
+extern volatile int curCamGain, curCamGceil, curCamAec, curCamGma, curCamLenc;
+extern volatile int curCamCon, curCamBri, curCamSharp;
+extern volatile int diceBboxX, diceBboxY, diceBboxW, diceBboxH;
 extern void requestStart();
 extern void requestPause();
 extern void requestResume();
@@ -82,7 +88,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
-    char buf[896];
+    char buf[1500];
     bool scored = goalJustScored;
     if (scored) goalJustScored = false;
     extern volatile int lastMatchCount, lastBboxW, lastBboxH, lastMinPx, lastMaxPx, lastMaxBbox;
@@ -106,7 +112,13 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"matchPx\":%d,\"bboxW\":%d,\"bboxH\":%d,\"density\":%.0f,"
         "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\","
         "\"calMsg\":\"%s\",\"hasSnap\":%s,\"goalSeq\":%d,\"cdRemain\":%d,"
-        "\"role\":\"%s\",\"peer\":\"%s\",\"roiX\":%d,\"roiY\":%d,\"roiW\":%d,\"roiH\":%d}",
+        "\"role\":\"%s\",\"peer\":\"%s\",\"roiX\":%d,\"roiY\":%d,\"roiW\":%d,\"roiH\":%d,"
+        "\"diceX\":%d,\"diceY\":%d,\"diceW\":%d,\"diceH\":%d,"
+        "\"autoStage\":%d,\"autoStep\":%d,\"autoTotal\":%d,\"autoScore\":%d,\"autoDone\":%d,"
+        "\"autoGain\":%d,\"autoGceil\":%d,\"autoAec\":%d,\"autoGma\":%d,\"autoLenc\":%d,"
+        "\"autoCon\":%d,\"autoBri\":%d,\"autoSharp\":%d,\"autoThresh\":%d,"
+        "\"curGain\":%d,\"curGceil\":%d,\"curAec\":%d,\"curGma\":%d,\"curLenc\":%d,"
+        "\"curCon\":%d,\"curBri\":%d,\"curSharp\":%d}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
         (int)gameState, calContrastMin > 0 ? "true" : "false",
@@ -118,7 +130,14 @@ static esp_err_t status_handler(httpd_req_t *req) {
         calFeedback,
         calSnapshotLen > 0 ? "true" : "false",
         (int)goalSnapshotSeq, cdRemain,
-        role, peer, (int)roiOffsetX, (int)roiOffsetY, (int)roiW, (int)roiH);
+        role, peer, (int)roiOffsetX, (int)roiOffsetY, (int)roiW, (int)roiH,
+        (int)diceBboxX, (int)diceBboxY, (int)diceBboxW, (int)diceBboxH,
+        (int)autotuneStage, (int)autotuneStep, (int)autotuneTotalSteps, (int)autotuneBestScore, (int)autotuneDone,
+        (int)autotuneBestGain, (int)autotuneBestGceil, (int)autotuneBestAec,
+        (int)autotuneBestGma, (int)autotuneBestLenc,
+        (int)autotuneBestCon, (int)autotuneBestBri, (int)autotuneBestSharp, (int)autotuneBestThresh,
+        (int)curCamGain, (int)curCamGceil, (int)curCamAec, (int)curCamGma, (int)curCamLenc,
+        (int)curCamCon, (int)curCamBri, (int)curCamSharp);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, buf, strlen(buf));
@@ -324,19 +343,19 @@ static esp_err_t reset_handler(httpd_req_t *req) {
 }
 
 static esp_err_t mode_select_handler(httpd_req_t *req) {
-    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_type(req, "text/html; charset=UTF-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     return httpd_resp_send(req, MODE_SELECT_HTML, strlen(MODE_SELECT_HTML));
 }
 
 static esp_err_t match_handler(httpd_req_t *req) {
-    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_type(req, "text/html; charset=UTF-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     return httpd_resp_send(req, MATCH_DASHBOARD_HTML, strlen(MATCH_DASHBOARD_HTML));
 }
 
 static esp_err_t training_handler(httpd_req_t *req) {
-    httpd_resp_set_type(req, "text/html");
+    httpd_resp_set_type(req, "text/html; charset=UTF-8");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     return httpd_resp_send(req, TRAINING_DASHBOARD_HTML, strlen(TRAINING_DASHBOARD_HTML));
 }
@@ -402,24 +421,11 @@ static esp_err_t threshold_handler(httpd_req_t *req) {
     return httpd_resp_send(req, resp, strlen(resp));
 }
 
-static esp_err_t audio_handler(httpd_req_t *req) {
-    char buf[32];
-    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
-        char val[8];
-        if (httpd_query_key_value(buf, "id", val, sizeof(val)) == ESP_OK) {
-            int id = atoi(val);
-            if (id >= 0 && id <= 2) {
-                goalAudioSelection = id;
-                audioPreview = 1;
-                playGoalSound();
-            }
-        }
-    }
-    char resp[64];
-    snprintf(resp, sizeof(resp), "{\"ok\":true,\"audio\":%d}", goalAudioSelection);
+static esp_err_t autotune_handler(httpd_req_t *req) {
+    requestAutotune();
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    return httpd_resp_send(req, resp, strlen(resp));
+    return httpd_resp_send(req, "{\"ok\":true}", 11);
 }
 
 void startCameraServer() {
@@ -427,6 +433,8 @@ void startCameraServer() {
     config.server_port = 80;
     config.ctrl_port = 32768;
     config.max_uri_handlers = 21;
+    config.max_open_sockets = 10;
+    config.lru_purge_enable = true;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {
@@ -449,7 +457,7 @@ void startCameraServer() {
         httpd_uri_t volume_uri = { .uri = "/volume", .method = HTTP_GET, .handler = volume_handler };
         httpd_uri_t led_uri = { .uri = "/led", .method = HTTP_GET, .handler = led_handler };
         httpd_uri_t threshold_uri = { .uri = "/threshold", .method = HTTP_GET, .handler = threshold_handler };
-        httpd_uri_t audio_uri = { .uri = "/audio", .method = HTTP_GET, .handler = audio_handler };
+        httpd_uri_t autotune_uri = { .uri = "/autotune", .method = HTTP_GET, .handler = autotune_handler };
         httpd_register_uri_handler(server, &index_uri);
         httpd_register_uri_handler(server, &training_uri);
         httpd_register_uri_handler(server, &match_uri);
@@ -469,7 +477,7 @@ void startCameraServer() {
         httpd_register_uri_handler(server, &volume_uri);
         httpd_register_uri_handler(server, &led_uri);
         httpd_register_uri_handler(server, &threshold_uri);
-        httpd_register_uri_handler(server, &audio_uri);
+        httpd_register_uri_handler(server, &autotune_uri);
         Serial.println("Web server started on port 80");
     }
 
@@ -477,6 +485,7 @@ void startCameraServer() {
     stream_config.server_port = 81;
     stream_config.ctrl_port = 32769;
     stream_config.stack_size = 8192;
+    stream_config.lru_purge_enable = true;
 
     httpd_handle_t stream_server = NULL;
     if (httpd_start(&stream_server, &stream_config) == ESP_OK) {

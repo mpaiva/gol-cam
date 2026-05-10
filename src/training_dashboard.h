@@ -21,6 +21,7 @@ pointer-events:none;text-shadow:0 0 30px #0f0}
 cursor:pointer;font-weight:bold;transition:all 0.2s}
 .btn:active{transform:scale(0.95)}
 .btn-cal{background:#f90;color:#000}
+.btn-tune{background:#36c;color:#fff}
 .drop-sel{margin:6px 0}
 .btn-start{background:#0a0;color:#fff}
 #info{color:#888;font-size:0.85em;margin:5px;text-align:center}
@@ -86,7 +87,9 @@ border-radius:6px;display:flex;align-items:center;justify-content:center}
 padding:8px 12px;font-size:0.85em;width:100%;max-width:300px}
 .main-row{display:flex;gap:12px;width:100%;max-width:700px;align-items:flex-start;margin:8px 0}
 .cam-panel{flex:1;min-width:0}
-.cam-panel img{width:100%;margin:0}
+.cam-panel img{width:100%;margin:0;display:block}
+.cam-wrap{position:relative;width:100%;line-height:0}
+.cam-wrap svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 .ctrl-panel{display:flex;flex-direction:column;gap:6px;min-width:120px;font-size:0.75em;color:#888}
 .ctrl-panel label{display:flex;align-items:center;justify-content:space-between;gap:4px;white-space:nowrap}
 .ctrl-panel input[type=range]{width:80px;accent-color:#0ff}
@@ -137,7 +140,13 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <label>LED<input type='checkbox' onclick="fetch('/led?val='+(this.checked?1:0))"></label>
 </div>
 <div class='cam-panel'>
+<div class='cam-wrap'>
 <img id='cam'/>
+<svg id='cam-overlay' viewBox='0 0 320 240' preserveAspectRatio='none'>
+<rect id='ov-roi' x='0' y='0' width='0' height='0' fill='none' stroke='#ffff00' stroke-width='2'/>
+<rect id='ov-dice' x='0' y='0' width='0' height='0' fill='none' stroke='#32cd32' stroke-width='2' style='display:none'/>
+</svg>
+</div>
 <div style='display:flex;gap:12px;justify-content:center;align-items:flex-start;margin-top:4px'>
 <div class='dpad'>
 <div></div><button class='btn' onclick="moveRoi(0,-8)">&#9650;</button><div></div>
@@ -170,12 +179,8 @@ H<button class='btn' onclick="resizeRoi(0,-8)">&#8722;</button>
 <div id='cd-bar'><div id='cd-fill'></div></div>
 <div id='cd-text'></div>
 </div>
-<select class='drop-sel' id='audio-sel' onchange='setAudio(this.value)'>
-<option value='0' data-i18n='train.audio_brasil'>&#127925; Brasil (Globo)</option>
-<option value='1' data-i18n='train.audio_flamengo'>&#127925; Flamengo</option>
-<option value='2' data-i18n='train.audio_vasco'>&#127925; Vasco</option>
-</select>
 <div class='idle-controls' id='idle-controls'>
+<button class='btn btn-tune' id='btn-tune' onclick='autotune()' data-i18n='train.autotune'>&#9881; Auto-Tune</button>
 <button class='btn btn-cal' id='btn-cal' onclick='calibrate()' data-i18n='train.calibrate'>Calibrate Dice</button>
 <button class='btn btn-start' id='btn-start' onclick='startGame()' style='display:none' data-i18n='train.start'>Start Game</button>
 </div>
@@ -197,6 +202,8 @@ en:{
 'train.calibrate':'Calibrate Dice',
 'train.calibrating':'Calibrating...',
 'train.analyzing':'Analyzing frame...',
+'train.autotune':'⚙ Auto-Tune',
+'train.autotuning':'Auto-tuning contrast...',
 'train.start':'Start Game',
 'train.pause':'Pause',
 'train.resume':'Resume',
@@ -210,10 +217,7 @@ en:{
 'train.hint_calibrated':'Calibrated! Press Start Game',
 'train.detecting_in':'Detecting in %ds...',
 'train.disconnected':'disconnected',
-'train.gol_num':'GOL #%d',
-'train.audio_brasil':'Brasil (Globo)',
-'train.audio_flamengo':'Flamengo',
-'train.audio_vasco':'Vasco'
+'train.gol_num':'GOL #%d'
 },
 pt:{
 'nav.menu':'\u2190 Menu',
@@ -225,6 +229,8 @@ pt:{
 'train.calibrate':'Calibrar Dadinho',
 'train.calibrating':'Calibrando...',
 'train.analyzing':'Analisando frame...',
+'train.autotune':'⚙ Auto-Ajuste',
+'train.autotuning':'Ajustando contraste...',
 'train.start':'Iniciar Jogo',
 'train.pause':'Pausar',
 'train.resume':'Continuar',
@@ -238,10 +244,7 @@ pt:{
 'train.hint_calibrated':'Calibrado! Pressione Iniciar Jogo',
 'train.detecting_in':'Detectando em %ds...',
 'train.disconnected':'desconectado',
-'train.gol_num':'GOL #%d',
-'train.audio_brasil':'Brasil (Globo)',
-'train.audio_flamengo':'Flamengo',
-'train.audio_vasco':'Vasco'
+'train.gol_num':'GOL #%d'
 }
 };
 var curLang='en';
@@ -308,9 +311,6 @@ else await fetch('/roi?dx='+dx+'&dy='+dy);}
 async function resizeRoi(dw,dh){
 await fetch('/roi?dw='+dw+'&dh='+dh);}
 
-async function setAudio(id){
-await fetch('/audio?id='+id);}
-
 async function calibrate(){
 $('btn-cal').textContent=t('train.calibrating');
 $('btn-cal').disabled=true;
@@ -330,6 +330,52 @@ $('cal-snap').style.display='block';}
 $('btn-cal').textContent=t('train.calibrate');
 $('btn-cal').disabled=false;},1500);}
 
+function setSlider(s,v){
+if(v===undefined||v===null||Number.isNaN(v))return;
+s.value=v;s.setAttribute('value',v);
+s.dispatchEvent(new Event('input',{bubbles:true}));}
+
+function syncSliders(d,useCur){
+const g=useCur?d.curGain:d.autoGain, gc=useCur?d.curGceil:d.autoGceil;
+const ae=useCur?d.curAec:d.autoAec, c=useCur?d.curCon:d.autoCon;
+const b=useCur?d.curBri:d.autoBri, sh=useCur?d.curSharp:d.autoSharp;
+const gm=useCur?d.curGma:d.autoGma, le=useCur?d.curLenc:d.autoLenc;
+document.querySelectorAll('.cam-sliders input[type=range]').forEach(s=>{
+const oc=s.getAttribute('onchange')||'';
+if(oc.includes("'aec'"))setSlider(s,ae);
+else if(oc.includes("'gain'"))setSlider(s,g);
+else if(oc.includes("'gceil'"))setSlider(s,gc);
+else if(oc.includes("'con'"))setSlider(s,c);
+else if(oc.includes("'bri'"))setSlider(s,b);
+else if(oc.includes("'sharp'"))setSlider(s,sh);
+else if(!useCur&&oc.includes('/threshold'))setSlider(s,d.autoThresh);});
+document.querySelectorAll('.cam-sliders input[type=checkbox]').forEach(cb=>{
+const oc=cb.getAttribute('onclick')||'';
+if(oc.includes("'gma'")&&gm!==undefined)cb.checked=!!gm;
+else if(oc.includes("'lenc'")&&le!==undefined)cb.checked=!!le;});}
+
+async function autotune(){
+$('btn-tune').disabled=true;$('btn-cal').disabled=true;
+$('cal-feedback').style.display='block';
+$('cal-feedback').textContent=t('train.autotuning');
+$('cal-feedback').className='';
+await fetch('/autotune');
+const tick=setInterval(async()=>{
+try{const r=await fetch('/status');const d=await r.json();
+if(d.calMsg)$('cal-feedback').textContent=d.calMsg;
+if(d.autoDone===1){
+clearInterval(tick);
+syncSliders(d,false);
+$('cal-feedback').className=d.autoScore>=100?'cal-ok':'cal-fail';
+$('btn-tune').disabled=false;$('btn-cal').disabled=false;
+// Re-fetch after a moment in case the firmware updated values right after autoDone
+setTimeout(async()=>{try{const r2=await fetch('/status');const d2=await r2.json();
+if(d2.autoDone===1)syncSliders(d2,false);}catch(e){}},400);
+}else if(d.autoStage>0){
+syncSliders(d,true);
+}
+}catch(e){}},250);}
+
 async function startGame(){await fetch('/start');
 $('cal-snap').style.display='none';$('cal-feedback').style.display='none';
 glog.innerHTML='';lastGolSeq=0;}
@@ -345,9 +391,9 @@ $('game-bar').style.display=inGame?'block':'none';
 $('btn-pause').style.display=playing?'':'none';
 $('btn-resume').style.display=paused?'':'none';
 $('idle-controls').style.display=idle?'':'none';
-$('audio-sel').style.display=idle?'':'none';
 $('btn-start').style.display=(idle&&cal)?'':'none';
-$('btn-cal').style.display=idle?'':'none';}
+$('btn-cal').style.display=idle?'':'none';
+$('btn-tune').style.display=idle?'':'none';}
 
 setInterval(async()=>{
 try{const r=await fetch('/status');const d=await r.json();
@@ -373,7 +419,17 @@ $('cd-fill').style.width=(d.cdRemain/100)+'%';
 if(d.calibrated){$('cal-info').style.display='';
 $('cal-info').textContent='Dice: '+d.calPx+'px, '+d.calW+'x'+d.calH+
 'px (contrast>='+d.calContrast+')';}
-if(d.roiW!==undefined)$('roi-info').textContent='ROI: '+d.roiW+'x'+d.roiH+' offset:'+d.roiX+','+d.roiY;
+if(d.roiW!==undefined){
+$('roi-info').textContent='ROI: '+d.roiW+'x'+d.roiH+' offset:'+d.roiX+','+d.roiY;
+const roiX=160-d.roiW/2+(d.roiX||0), roiY=120-d.roiH/2+(d.roiY||0);
+const ovR=$('ov-roi');ovR.setAttribute('x',roiX);ovR.setAttribute('y',roiY);
+ovR.setAttribute('width',d.roiW);ovR.setAttribute('height',d.roiH);}
+const ovD=$('ov-dice');
+if(d.diceX!==undefined&&d.diceX>=0){
+ovD.setAttribute('x',d.diceX);ovD.setAttribute('y',d.diceY);
+ovD.setAttribute('width',d.diceW);ovD.setAttribute('height',d.diceH);
+ovD.style.display='';}
+else{ovD.style.display='none';}
 $('score').textContent=d.goals;
 if(d.state===2||d.state===3)$('info').textContent='fps:'+d.fps;
 if(d.state===1)log('Calibrating...','log-cal');

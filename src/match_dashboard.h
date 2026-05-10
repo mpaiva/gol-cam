@@ -36,7 +36,9 @@ cursor:pointer;font-weight:bold;transition:all 0.2s}
 #feeds{display:none;width:100%;max-width:800px;gap:10px;margin:10px 0;
 justify-content:center;flex-wrap:wrap}
 .feed-box{flex:1;min-width:280px;max-width:390px;text-align:center}
-.feed-box img{width:100%;border:2px solid #333;border-radius:8px}
+.feed-box img{width:100%;border:2px solid #333;border-radius:8px;display:block}
+.cam-wrap{position:relative;line-height:0}
+.cam-wrap svg{position:absolute;inset:2px;width:calc(100% - 4px);height:calc(100% - 4px);pointer-events:none}
 .feed-label{font-size:0.85em;color:#888;margin:4px 0}
 .feed-status{font-size:0.75em;padding:2px 8px;border-radius:8px;display:inline-block;margin:2px 0}
 .st-online{background:#0a0;color:#fff}
@@ -47,6 +49,7 @@ justify-content:center;flex-wrap:wrap}
 #controls{display:none;width:100%;max-width:600px;margin:8px 0;text-align:center}
 .ctrl-row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:6px 0}
 .btn-cal{background:#f90;color:#000}
+.btn-tune{background:#36c;color:#fff}
 .btn-start{background:#0a0;color:#fff}
 .btn-pause{background:#ff0;color:#000}
 .btn-resume{background:#0a0;color:#fff}
@@ -143,7 +146,13 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <div id='feeds' style='display:none'>
 <div class='feed-box'>
 <div class='feed-label'><span data-i18n='match.home_goal'>Home Goal</span> <span id='st-home' class='feed-status st-idle'>...</span></div>
+<div class='cam-wrap'>
 <img id='cam-home'/>
+<svg id='ov-home' viewBox='0 0 320 240' preserveAspectRatio='none'>
+<rect class='ov-roi' fill='none' stroke='#ffff00' stroke-width='2'/>
+<rect class='ov-dice' fill='none' stroke='#32cd32' stroke-width='2' style='display:none'/>
+</svg>
+</div>
 <div class='cam-sliders'>
 <label>Bri<input type='range' min='-2' max='2' value='-1' onchange="camAdj('home','bri',this.value)"></label>
 <label>Con<input type='range' min='-2' max='2' value='1' onchange="camAdj('home','con',this.value)"></label>
@@ -156,9 +165,6 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <label>B&amp;W<input type='range' min='0' max='255' value='30' onchange="setThreshold('home',this.value)"></label>
 <label>Vol<input type='range' min='0' max='100' value='70' onchange="setVolume('home',this.value)"><span style='cursor:pointer' onclick="testSound('home')">&#9654;</span></label>
 <label>LED<input type='checkbox' onclick="setLed('home',this.checked?1:0)"></label>
-<select style='font-size:1em;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:2px' onchange="setAudio('home',this.value)">
-<option value='0'>Brasil</option><option value='1'>Flamengo</option><option value='2'>Vasco</option>
-</select>
 </div>
 <div class='roi-controls'>
 <button class='btn' onclick="moveRoi('home',0,-8)">&#9650;</button>
@@ -173,11 +179,20 @@ H<button class='btn' onclick="resizeRoi('home',0,-8)">&#8722;</button>
 <button class='btn' onclick="resizeRoi('home',0,8)">&#43;</button>
 </div>
 <div class='roi-info' id='roi-home'></div>
-<div class='ctrl-row'><button class='btn btn-cal' onclick='calibrate("home")' data-i18n='match.cal_home'>Calibrate Home</button></div>
+<div class='ctrl-row'>
+<button class='btn btn-tune' onclick='autotune("home")' data-i18n='match.tune_home'>&#9881; Auto-Tune</button>
+<button class='btn btn-cal' onclick='calibrate("home")' data-i18n='match.cal_home'>Calibrate Home</button>
+</div>
 </div>
 <div class='feed-box'>
 <div class='feed-label'><span data-i18n='match.away_goal'>Away Goal</span> <span id='st-away' class='feed-status st-idle'>...</span></div>
+<div class='cam-wrap'>
 <img id='cam-away'/>
+<svg id='ov-away' viewBox='0 0 320 240' preserveAspectRatio='none'>
+<rect class='ov-roi' fill='none' stroke='#ffff00' stroke-width='2'/>
+<rect class='ov-dice' fill='none' stroke='#32cd32' stroke-width='2' style='display:none'/>
+</svg>
+</div>
 <div class='cam-sliders'>
 <label>Bri<input type='range' min='-2' max='2' value='-1' onchange="camAdj('away','bri',this.value)"></label>
 <label>Con<input type='range' min='-2' max='2' value='1' onchange="camAdj('away','con',this.value)"></label>
@@ -190,9 +205,6 @@ H<button class='btn' onclick="resizeRoi('home',0,-8)">&#8722;</button>
 <label>B&amp;W<input type='range' min='0' max='255' value='30' onchange="setThreshold('away',this.value)"></label>
 <label>Vol<input type='range' min='0' max='100' value='70' onchange="setVolume('away',this.value)"><span style='cursor:pointer' onclick="testSound('away')">&#9654;</span></label>
 <label>LED<input type='checkbox' onclick="setLed('away',this.checked?1:0)"></label>
-<select style='font-size:1em;background:#222;color:#fff;border:1px solid #555;border-radius:4px;padding:2px' onchange="setAudio('away',this.value)">
-<option value='0'>Brasil</option><option value='1'>Flamengo</option><option value='2'>Vasco</option>
-</select>
 </div>
 <div class='roi-controls'>
 <button class='btn' onclick="moveRoi('away',0,-8)">&#9650;</button>
@@ -207,7 +219,10 @@ H<button class='btn' onclick="resizeRoi('away',0,-8)">&#8722;</button>
 <button class='btn' onclick="resizeRoi('away',0,8)">&#43;</button>
 </div>
 <div class='roi-info' id='roi-away'></div>
-<div class='ctrl-row'><button class='btn btn-cal' onclick='calibrate("away")' data-i18n='match.cal_away'>Calibrate Away</button></div>
+<div class='ctrl-row'>
+<button class='btn btn-tune' onclick='autotune("away")' data-i18n='match.tune_away'>&#9881; Auto-Tune</button>
+<button class='btn btn-cal' onclick='calibrate("away")' data-i18n='match.cal_away'>Calibrate Away</button>
+</div>
 </div>
 </div>
 
@@ -246,6 +261,8 @@ en:{
 'match.away_goal':'Away Goal',
 'match.cal_home':'Calibrate Home',
 'match.cal_away':'Calibrate Away',
+'match.tune_home':'⚙ Auto-Tune',
+'match.tune_away':'⚙ Auto-Tune',
 'match.start':'Start Match',
 'match.pause':'Pause',
 'match.resume':'Resume',
@@ -280,6 +297,8 @@ pt:{
 'match.away_goal':'Gol Fora',
 'match.cal_home':'Calibrar Casa',
 'match.cal_away':'Calibrar Fora',
+'match.tune_home':'⚙ Auto-Ajuste',
+'match.tune_away':'⚙ Auto-Ajuste',
 'match.start':'Iniciar Partida',
 'match.pause':'Pausar',
 'match.resume':'Continuar',
@@ -392,9 +411,22 @@ async function pollBoard(side){
     else if(d.state===3){el.textContent=t('match.paused');el.className='feed-status st-online';}
     else if(d.state===0){el.textContent=d.calibrated?t('match.ready'):t('match.idle');el.className='feed-status st-idle';}
     else{el.textContent=t('match.cal');el.className='feed-status st-idle';}
-    // Update ROI info
+    // Update ROI info + SVG overlays
     var ri=$(('roi-'+side));
     if(ri&&d.roiW!==undefined)ri.textContent='ROI: '+d.roiW+'x'+d.roiH+' offset:'+d.roiX+','+d.roiY;
+    var ov=$(('ov-'+side));
+    if(ov&&d.roiW!==undefined){
+      var roi=ov.querySelector('.ov-roi');
+      var rx=160-d.roiW/2+(d.roiX||0), ry=120-d.roiH/2+(d.roiY||0);
+      roi.setAttribute('x',rx);roi.setAttribute('y',ry);
+      roi.setAttribute('width',d.roiW);roi.setAttribute('height',d.roiH);
+      var dice=ov.querySelector('.ov-dice');
+      if(d.diceX!==undefined&&d.diceX>=0){
+        dice.setAttribute('x',d.diceX);dice.setAttribute('y',d.diceY);
+        dice.setAttribute('width',d.diceW);dice.setAttribute('height',d.diceH);
+        dice.style.display='';
+      }else{dice.style.display='none';}
+    }
   }catch(e){
     b.online=false;
     $('st-'+side).textContent=t('match.offline');
@@ -500,10 +532,6 @@ async function setLed(side,val){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/led?val='+val);}
 
-async function setAudio(side,id){
-  const ip=boards[side].ip;if(!ip)return;
-  await fetch('http://'+ip+'/audio?id='+id);}
-
 async function testSound(side){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/test-sound');}
@@ -522,6 +550,51 @@ async function calibrate(side){
   const ip=boards[side].ip;
   if(!ip)return;
   await fetch('http://'+ip+'/calibrate');
+}
+
+function setMatchSlider(s,v){
+  if(v===undefined||v===null||Number.isNaN(v))return;
+  s.value=v;s.setAttribute('value',v);
+  s.dispatchEvent(new Event('input',{bubbles:true}));
+}
+
+function syncMatchSliders(panel,d,useCur){
+  if(!panel)return;
+  const g=useCur?d.curGain:d.autoGain, gc=useCur?d.curGceil:d.autoGceil;
+  const ae=useCur?d.curAec:d.autoAec, c=useCur?d.curCon:d.autoCon;
+  const b=useCur?d.curBri:d.autoBri, sh=useCur?d.curSharp:d.autoSharp;
+  const gm=useCur?d.curGma:d.autoGma, le=useCur?d.curLenc:d.autoLenc;
+  panel.querySelectorAll('input[type=range]').forEach(s=>{
+    const oc=s.getAttribute('onchange')||'';
+    if(oc.includes("'aec'"))setMatchSlider(s,ae);
+    else if(oc.includes("'gain'"))setMatchSlider(s,g);
+    else if(oc.includes("'gceil'"))setMatchSlider(s,gc);
+    else if(oc.includes("'con'"))setMatchSlider(s,c);
+    else if(oc.includes("'bri'"))setMatchSlider(s,b);
+    else if(oc.includes("'sharp'"))setMatchSlider(s,sh);
+    else if(!useCur&&oc.includes('setThreshold'))setMatchSlider(s,d.autoThresh);});
+  panel.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    const oc=cb.getAttribute('onclick')||'';
+    if(oc.includes("'gma'")&&gm!==undefined)cb.checked=!!gm;
+    else if(oc.includes("'lenc'")&&le!==undefined)cb.checked=!!le;});
+}
+
+async function autotune(side){
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/autotune');
+  const panel=document.querySelector('#cam-'+side).closest('.feed-box');
+  const tick=setInterval(async()=>{
+    try{const r=await fetch('http://'+ip+'/status');const d=await r.json();
+      if(d.autoDone===1){
+        clearInterval(tick);
+        syncMatchSliders(panel,d,false);
+        setTimeout(async()=>{try{const r2=await fetch('http://'+ip+'/status');
+          const d2=await r2.json();if(d2.autoDone===1)syncMatchSliders(panel,d2,false);
+        }catch(e){}},400);
+      }else if(d.autoStage>0){
+        syncMatchSliders(panel,d,true);
+      }
+    }catch(e){}},250);
 }
 
 async function matchCmd(cmd){
