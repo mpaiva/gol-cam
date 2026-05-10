@@ -3,6 +3,15 @@
 //   https://github.com/mpaiva/placar-eletronico-wifi
 // for integration with gol-cam: STA mode, .env-driven Wi-Fi,
 // HTTP /goal + /status endpoints so the cameras can push goals.
+//
+// Power notes (validated on bench):
+// • Phone-oriented USB power banks kill the rail in ~10 s no matter
+//   the steady draw — they trip on the WiFi association current spike.
+//   Fix below: lower TX power + modem sleep softens the spike.
+// • For untethered operation, wire the battery directly to VIN + GND
+//   on the DevKit (NOT through the USB connector — the bank logic is
+//   what causes the cutoff). A 1000 µF electrolytic across the battery
+//   terminals absorbs the remaining WiFi spike and keeps voltage stable.
 // =============================================================
 
 #include <Arduino.h>
