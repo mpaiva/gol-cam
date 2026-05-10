@@ -81,7 +81,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
         res = httpd_resp_send_chunk(req, STREAM_BOUNDARY, strlen(STREAM_BOUNDARY));
         if (res == ESP_OK) res = httpd_resp_send_chunk(req, part_buf, hlen);
         if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char *)jpg_buf, jpg_len);
-        if (res != ESP_OK) break;
+        if (res != ESP_OK) break;  // client disconnected
     }
     free(jpg_buf);
     return res;
@@ -435,6 +435,7 @@ void startCameraServer() {
     config.max_uri_handlers = 21;
     config.max_open_sockets = 10;
     config.lru_purge_enable = true;
+    config.stack_size = 8192;
 
     httpd_handle_t server = NULL;
     if (httpd_start(&server, &config) == ESP_OK) {

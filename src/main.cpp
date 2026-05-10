@@ -811,7 +811,7 @@ void loop() {
     // are drawn client-side as SVG over the <img>).
     if ((gameState != STATE_PLAYING) || calContrastMin <= 0) {
         applyThreshold(pixels, DETECT_W, DETECT_H, contrastThreshold);
-        diceBboxX = -1;  // no detection in idle
+        diceBboxX = -1;
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
         if (frame2jpg(fb, 70, &jpg_buf, &jpg_len)) {
