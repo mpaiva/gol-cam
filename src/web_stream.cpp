@@ -124,7 +124,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"autoCon\":%d,\"autoBri\":%d,\"autoSharp\":%d,\"autoThresh\":%d,"
         "\"curGain\":%d,\"curGceil\":%d,\"curAec\":%d,\"curGma\":%d,\"curLenc\":%d,"
         "\"curCon\":%d,\"curBri\":%d,\"curSharp\":%d,"
-        "\"scoreboardIp\":\"%s\"}",
+        "\"scoreboardIp\":\"%s\","
+        "\"heap\":%u,\"heapMin\":%u,\"psram\":%u,\"psramMin\":%u,\"uptime\":%u}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
         (int)gameState, calContrastMin > 0 ? "true" : "false",
@@ -144,7 +145,10 @@ static esp_err_t status_handler(httpd_req_t *req) {
         (int)autotuneBestCon, (int)autotuneBestBri, (int)autotuneBestSharp, (int)autotuneBestThresh,
         (int)curCamGain, (int)curCamGceil, (int)curCamAec, (int)curCamGma, (int)curCamLenc,
         (int)curCamCon, (int)curCamBri, (int)curCamSharp,
-        scoreboardIp);
+        scoreboardIp,
+        (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
+        (unsigned)ESP.getFreePsram(), (unsigned)ESP.getMinFreePsram(),
+        (unsigned)(millis() / 1000));
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, buf, strlen(buf));

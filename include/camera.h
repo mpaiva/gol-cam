@@ -31,7 +31,11 @@ bool initCamera(framesize_t frameSize = FRAMESIZE_QVGA,
     config.grab_mode = CAMERA_GRAB_LATEST;
     config.fb_location = CAMERA_FB_IN_PSRAM;
     config.jpeg_quality = 12;
-    config.fb_count = 2;
+    // 3 framebuffers in PSRAM (~230 KB) so the camera DMA never overflows
+    // when the loop pauses briefly (autotune, JPEG encoding spikes, etc).
+    // CAMERA_GRAB_LATEST drops oldest frames if all buffers are full so the
+    // detection loop always works with a fresh frame.
+    config.fb_count = 3;
 
     esp_err_t err = esp_camera_init(&config);
     if (err != ESP_OK) {
