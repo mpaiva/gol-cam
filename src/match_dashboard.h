@@ -6,101 +6,133 @@ static const char MATCH_DASHBOARD_HTML[] = R"rawliteral(
 <meta name='viewport' content='width=device-width,initial-scale=1'>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
-body{background:#111;color:#fff;font-family:system-ui,sans-serif;
-display:flex;flex-direction:column;align-items:center;padding:10px}
-h1{font-size:1.6em;margin:5px 0}
-a{color:#888;text-decoration:none;font-size:0.8em}
-a:hover{color:#fff}
+:root{
+--bg:#0a0a0a;--card:#161616;--border:#262626;--muted:#888;
+--accent:#0ff;--green:#0a0;--orange:#f90;--blue:#36c;--red:#c00;--yellow:#ff0
+}
+body{background:var(--bg);color:#fff;font-family:system-ui,-apple-system,sans-serif;
+min-height:100vh;display:flex;flex-direction:column;align-items:center;padding-bottom:24px}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;width:100%;
+max-width:920px;border-bottom:1px solid var(--border)}
+header .back{color:var(--accent);text-decoration:none;font-size:0.9em}
+header h1{margin:0;font-size:1.25em;flex:1;text-align:center;letter-spacing:0.5px}
 
-/* Config panel */
-#config{background:#1a1a1a;border:1px solid #333;border-radius:12px;
-padding:20px;margin:10px 0;width:100%;max-width:600px;text-align:center}
-#config h2{font-size:1.2em;margin-bottom:12px}
-#config label{color:#888;font-size:0.85em}
-#config input{background:#222;color:#fff;border:1px solid #444;border-radius:6px;
-padding:8px 12px;font-size:1em;width:200px;margin:4px 8px}
-.cfg-row{display:flex;align-items:center;justify-content:center;gap:8px;margin:8px 0;flex-wrap:wrap}
-.btn{padding:10px 20px;font-size:1em;border:none;border-radius:8px;
-cursor:pointer;font-weight:bold;transition:all 0.2s}
-.btn:active{transform:scale(0.95)}
-.btn-go{background:#0f0;color:#000}
-.btn-go:disabled{background:#333;color:#666;cursor:default}
+#config{background:var(--card);border:1px solid var(--border);border-radius:12px;
+padding:24px;margin:24px 12px;width:100%;max-width:420px;text-align:center}
+#config h2{font-size:1.1em;margin-bottom:14px;color:var(--accent)}
+.cfg-row{display:flex;align-items:center;justify-content:space-between;
+gap:8px;margin:10px 0}
+.cfg-row label{color:var(--muted);font-size:0.85em;flex:0 0 60px;text-align:left}
+.cfg-row input{flex:1;background:#0d0d0d;color:#fff;border:1px solid #333;
+border-radius:6px;padding:8px 12px;font-size:0.95em;font-family:ui-monospace,monospace}
+#cfg-msg{color:var(--muted);font-size:0.8em;margin-top:8px;min-height:1em}
 
-/* Scoreboard */
-#scoreboard{display:none;margin:10px 0;text-align:center}
-#score-line{font-size:4em;font-weight:bold;margin:5px 0}
-.team-label{font-size:1.2em;color:#888}
-#score-line .x{color:#555;margin:0 15px}
+.btn{padding:12px 22px;font-size:0.95em;border:none;border-radius:10px;
+cursor:pointer;font-weight:700;transition:transform 0.1s,filter 0.15s}
+.btn:active{transform:scale(0.96)}
+.btn:disabled{filter:grayscale(0.7) brightness(0.7);cursor:default}
+.btn-go{background:var(--green);color:#fff;width:100%;margin-top:8px}
+.btn-cal{background:var(--orange);color:#000}
+.btn-tune{background:var(--blue);color:#fff}
+.btn-start{background:var(--green);color:#fff}
+.btn-pause{background:var(--yellow);color:#000}
+.btn-resume{background:var(--green);color:#fff}
+.btn-reset{background:#444;color:#fff}
+.btn-end{background:var(--red);color:#fff}
 
-/* Camera feeds */
-#feeds{display:none;width:100%;max-width:800px;gap:10px;margin:10px 0;
+#scoreboard{display:none;width:100%;max-width:920px;padding:14px 0;text-align:center}
+#score-line{display:inline-flex;align-items:baseline;gap:18px;font-size:4em;font-weight:800;
+line-height:1;letter-spacing:1px}
+#score-line .x{color:#444;font-size:0.5em;align-self:center}
+#score-line span:first-child,#score-line span:last-child{
+text-shadow:0 0 18px rgba(0,255,80,0.35);color:var(--green);min-width:1.2em}
+.team-labels{display:flex;justify-content:center;gap:60px;font-size:0.8em;
+color:var(--muted);letter-spacing:2px;margin-top:4px}
+
+#feeds{display:none;width:100%;max-width:920px;gap:10px;padding:0 10px;
 justify-content:center;flex-wrap:wrap}
-.feed-box{flex:1;min-width:280px;max-width:390px;text-align:center}
-.feed-box img{width:100%;border:2px solid #333;border-radius:8px;display:block}
-.cam-wrap{position:relative;line-height:0}
-.cam-wrap svg{position:absolute;inset:2px;width:calc(100% - 4px);height:calc(100% - 4px);pointer-events:none}
-.feed-label{font-size:0.85em;color:#888;margin:4px 0}
-.feed-status{font-size:0.75em;padding:2px 8px;border-radius:8px;display:inline-block;margin:2px 0}
-.st-online{background:#0a0;color:#fff}
-.st-offline{background:#c00;color:#fff}
-.st-idle{background:#333;color:#888}
+.feed-box{flex:1 1 380px;max-width:440px;background:var(--card);
+border:1px solid var(--border);border-radius:12px;padding:8px}
+.feed-head{display:flex;justify-content:space-between;align-items:center;
+font-size:0.85em;color:var(--muted);margin-bottom:6px;padding:0 4px}
+.feed-status{font-size:0.7em;padding:2px 8px;border-radius:8px;font-weight:600}
+.st-online{background:var(--green);color:#fff}
+.st-offline{background:var(--red);color:#fff}
+.st-idle{background:#2a2a2a;color:#aaa}
+.cam-wrap{position:relative;width:100%;line-height:0;border-radius:8px;overflow:hidden}
+.cam-wrap img{width:100%;display:block}
+.cam-wrap svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
 
-/* Controls */
-#controls{display:none;width:100%;max-width:600px;margin:8px 0;text-align:center}
-.ctrl-row{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin:6px 0}
-.btn-cal{background:#f90;color:#000}
-.btn-tune{background:#36c;color:#fff}
-.btn-start{background:#0a0;color:#fff}
-.btn-pause{background:#ff0;color:#000}
-.btn-resume{background:#0a0;color:#fff}
-.btn-reset{background:#555;color:#fff}
-.btn-end{background:#c00;color:#fff}
+.feed-actions{display:flex;gap:6px;margin:8px 0 4px;flex-wrap:wrap;justify-content:center}
+.feed-actions .btn{padding:9px 14px;font-size:0.85em}
+.roi-bar{display:flex;align-items:center;justify-content:space-between;
+gap:6px;margin-top:6px;font-size:0.72em;color:var(--muted)}
+.roi-bar .dpad{display:grid;grid-template-columns:repeat(3,28px);grid-template-rows:repeat(3,24px);gap:2px}
+.roi-bar .dpad button{padding:0;background:#222;color:#fff;border:1px solid #333;
+border-radius:4px;font-size:0.8em;cursor:pointer}
+.roi-bar .dpad button:active{background:#333}
+.roi-bar .resize{display:flex;flex-wrap:wrap;gap:3px;align-items:center;justify-content:center}
+.roi-bar .resize button{padding:3px 7px;background:#222;color:#fff;
+border:1px solid #333;border-radius:4px;cursor:pointer;min-width:24px}
+.roi-bar .resize button:active{background:#333}
+.roi-bar .info{flex:1;text-align:right;color:var(--accent);font-family:ui-monospace,monospace;font-size:0.7em}
 
-/* Gol flash */
-#gol-flash{position:fixed;top:0;left:0;width:100%;height:100%;
-background:rgba(0,255,0,0.3);pointer-events:none;opacity:0;transition:opacity 0.5s}
-#gol-text{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
-font-size:6em;font-weight:bold;color:#0f0;opacity:0;transition:opacity 0.5s;
-pointer-events:none;text-shadow:0 0 30px #0f0}
-.active{opacity:1!important}
+details.expert{margin-top:8px;background:#0e0e0e;border:1px solid var(--border);
+border-radius:8px;overflow:hidden}
+details>summary{cursor:pointer;padding:8px 12px;font-size:0.78em;font-weight:600;
+color:var(--accent);user-select:none;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:'\25B8 ';transition:transform 0.15s;display:inline-block}
+details[open]>summary::before{transform:rotate(90deg)}
+.expert-body{padding:6px 12px 12px}
+.cam-sliders{display:grid;grid-template-columns:repeat(2,1fr);gap:5px 12px;
+font-size:0.72em;color:var(--muted)}
+.cam-sliders .group-title{grid-column:1 / -1;color:var(--accent);font-weight:600;
+font-size:0.78em;border-bottom:1px solid var(--border);padding-bottom:2px;margin-top:4px}
+.cam-sliders label{display:flex;align-items:center;justify-content:space-between;gap:5px}
+.cam-sliders input[type=range]{flex:1;min-width:50px;accent-color:var(--accent)}
+.cam-sliders input[type=checkbox]{accent-color:var(--accent)}
+.cam-sliders .play{cursor:pointer;color:var(--accent);padding-left:4px}
 
-/* Goal log */
-#gol-log{width:100%;max-width:600px;margin:10px 0}
-.gol-entry{background:#1a1a1a;border:1px solid #333;border-radius:8px;
-margin:8px 0;padding:10px;display:flex;gap:10px;align-items:center;cursor:pointer}
-.gol-entry:active{background:#222}
-.gol-entry img{width:100px;border-radius:4px;border:2px solid #0f0}
+#controls{display:none;width:100%;max-width:920px;padding:14px 12px}
+.match-bar{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;
+background:var(--card);border:1px solid var(--border);border-radius:12px;padding:12px}
+
+#gol-log{width:100%;max-width:920px;padding:0 12px;display:flex;flex-direction:column;gap:8px}
+.gol-entry{background:var(--card);border:1px solid var(--border);border-radius:8px;
+padding:8px;display:flex;gap:10px;align-items:center;cursor:pointer}
+.gol-entry:active{background:#1a1a1a}
+.gol-entry img{width:90px;border-radius:4px;border:2px solid var(--green)}
 .gol-entry .gol-info{flex:1;font-size:0.85em}
-.gol-entry .gol-num{color:#0f0;font-size:1.2em;font-weight:bold}
-.gol-entry .gol-side{font-size:0.8em;color:#888}
-.gol-entry .gol-time{color:#888;font-size:0.75em}
+.gol-entry .gol-num{color:var(--green);font-size:1.15em;font-weight:bold}
+.gol-entry .gol-side{font-size:0.78em;color:var(--muted)}
+.gol-entry .gol-time{color:var(--muted);font-size:0.7em}
 .gol-annulled{opacity:0.4}
 .gol-annulled .gol-num{text-decoration:line-through;color:#f44}
-.btn-var{background:#c00;color:#fff;padding:6px 12px;font-size:0.8em;
-border:none;border-radius:6px;cursor:pointer;font-weight:bold}
+.btn-var{background:var(--red);color:#fff;padding:5px 10px;font-size:0.75em;
+border:none;border-radius:5px;cursor:pointer;font-weight:bold}
 
-/* Lightbox */
-#lightbox{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);
-display:none;flex-direction:column;justify-content:center;align-items:center;z-index:100}
-#lightbox img{max-width:95%;max-height:70%;border:3px solid #0f0;border-radius:8px}
-#lb-title{color:#fff;font-size:1.5em;font-weight:bold;margin:10px 0}
-#lb-buttons{display:none;gap:20px;margin:15px 0}
-.btn-foi{background:#0a0;color:#fff;padding:14px 30px;font-size:1.2em;
+#gol-flash{position:fixed;inset:0;background:rgba(0,255,0,0.3);pointer-events:none;
+opacity:0;transition:opacity 0.5s;z-index:50}
+#gol-text{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+font-size:6em;font-weight:bold;color:#0f0;opacity:0;transition:opacity 0.5s;
+pointer-events:none;text-shadow:0 0 30px #0f0;z-index:51}
+.active{opacity:1!important}
+
+#lightbox{position:fixed;inset:0;background:rgba(0,0,0,0.92);
+display:none;flex-direction:column;justify-content:center;align-items:center;z-index:100;padding:16px}
+#lightbox img{max-width:95%;max-height:65%;border:3px solid var(--green);border-radius:8px}
+#lb-title{color:#fff;font-size:1.3em;font-weight:bold;margin:10px 0}
+#lb-buttons{display:none;gap:14px;margin:12px 0}
+.btn-foi{background:var(--green);color:#fff;padding:14px 28px;font-size:1.1em;
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
-.btn-anula{background:#c00;color:#fff;padding:14px 30px;font-size:1.2em;
+.btn-anula{background:var(--red);color:#fff;padding:14px 28px;font-size:1.1em;
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
-.cam-sliders{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin:4px 0;font-size:0.7em;color:#888}
-.cam-sliders label{display:flex;align-items:center;gap:3px}
-.cam-sliders input[type=range]{width:60px;accent-color:#0ff}
-.roi-controls{display:flex;gap:4px;align-items:center;justify-content:center;margin:4px 0;flex-wrap:wrap}
-.roi-controls .btn{padding:6px 10px;font-size:0.8em;background:#333;color:#fff;min-width:34px}
-.roi-controls .btn:active{background:#555}
-.roi-controls .btn-rst{background:#555;font-size:0.7em}
-.roi-info{color:#0ff;font-size:0.7em;text-align:center;margin:2px 0}
-.lang-picker{position:fixed;top:8px;right:8px;display:flex;gap:4px;z-index:200}
-.lang-btn{padding:4px 8px;font-size:0.75em;border:1px solid #555;border-radius:4px;
-background:#222;color:#aaa;cursor:pointer;font-weight:bold}
-.lang-btn.active{background:#0f0;color:#000;border-color:#0f0}
+
+.lang-picker{position:fixed;top:8px;right:8px;display:flex;gap:4px;z-index:90}
+.lang-btn{padding:3px 8px;font-size:0.7em;border:1px solid #333;border-radius:4px;
+background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
+.lang-btn.active{background:var(--accent);color:#000;border-color:var(--accent)}
 </style></head><body>
 <div class='lang-picker'>
 <button class='lang-btn' onclick="setLang('en')">EN</button>
@@ -116,36 +148,33 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <button class='btn-anula' id='btn-lb-anula' data-i18n='var.annul'>Anula</button>
 </div>
 </div>
-
+<header>
+<a class='back' href='/' data-i18n='nav.menu'>← Menu</a>
 <h1 data-i18n='match.title'>gol-cam MATCH</h1>
-<a href='/' data-i18n='nav.menu'>&#8592; Menu</a>
+<span style='flex:0 0 60px'></span>
+</header>
 
-<!-- Config panel -->
 <div id='config'>
 <h2 data-i18n='match.board_ips'>Board IPs</h2>
 <div class='cfg-row'>
-<label data-i18n='match.home'>Home:</label><input id='ip-home' placeholder='192.168.x.x'>
+<label data-i18n='match.home'>Home</label><input id='ip-home' placeholder='192.168.x.x'>
 </div>
 <div class='cfg-row'>
-<label data-i18n='match.away'>Away:</label><input id='ip-away' placeholder='192.168.x.x'>
+<label data-i18n='match.away'>Away</label><input id='ip-away' placeholder='192.168.x.x'>
 </div>
-<div class='cfg-row'>
 <button class='btn btn-go' id='btn-connect' onclick='connect()' data-i18n='match.connect'>Connect</button>
-</div>
-<div id='cfg-msg' style='color:#888;font-size:0.85em;margin-top:8px'></div>
+<div id='cfg-msg'></div>
 </div>
 
-<!-- Scoreboard -->
 <div id='scoreboard'>
-<div class='team-label' id='lbl-home' data-i18n='match.home_label'>HOME</div>
-<div id='score-line'><span id='score-home'>0</span><span class='x'>x</span><span id='score-away'>0</span></div>
-<div class='team-label' id='lbl-away' data-i18n='match.away_label'>AWAY</div>
+<div id='score-line'><span id='score-home'>0</span><span class='x'>×</span><span id='score-away'>0</span></div>
+<div class='team-labels'><span id='lbl-home' data-i18n='match.home_label'>HOME</span><span id='lbl-away' data-i18n='match.away_label'>AWAY</span></div>
 </div>
 
-<!-- Camera feeds -->
-<div id='feeds' style='display:none'>
-<div class='feed-box'>
-<div class='feed-label'><span data-i18n='match.home_goal'>Home Goal</span> <span id='st-home' class='feed-status st-idle'>...</span></div>
+<div id='feeds'>
+<!-- HOME -->
+<div class='feed-box' id='box-home'>
+<div class='feed-head'><span data-i18n='match.home_goal'>Home Goal</span><span id='st-home' class='feed-status st-idle'>...</span></div>
 <div class='cam-wrap'>
 <img id='cam-home'/>
 <svg id='ov-home' viewBox='0 0 320 240' preserveAspectRatio='none'>
@@ -153,7 +182,29 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <rect class='ov-dice' fill='none' stroke='#32cd32' stroke-width='2' style='display:none'/>
 </svg>
 </div>
+<div class='roi-bar'>
+<div class='dpad'>
+<div></div><button onclick="moveRoi('home',0,-8)">▲</button><div></div>
+<button onclick="moveRoi('home',-8,0)">◀</button>
+<button onclick="resetRoi('home')" style='font-size:0.55em'>RST</button>
+<button onclick="moveRoi('home',8,0)">▶</button>
+<div></div><button onclick="moveRoi('home',0,8)">▼</button><div></div>
+</div>
+<div class='resize'>
+<span>W</span><button onclick="resizeRoi('home',-8,0)">−</button><button onclick="resizeRoi('home',8,0)">+</button>
+<span>H</span><button onclick="resizeRoi('home',0,-8)">−</button><button onclick="resizeRoi('home',0,8)">+</button>
+</div>
+<div class='info' id='roi-home'></div>
+</div>
+<div class='feed-actions'>
+<button class='btn btn-tune' onclick='autotune("home")' data-i18n='match.tune'>⚙ Auto-Tune</button>
+<button class='btn btn-cal' onclick='calibrate("home")' data-i18n='match.cal'>🎯 Calibrate</button>
+</div>
+<details class='expert'>
+<summary data-i18n='match.expert'>⚙ Expert</summary>
+<div class='expert-body'>
 <div class='cam-sliders'>
+<div class='group-title' data-i18n='match.cam_section'>Camera</div>
 <label>Bri<input type='range' min='-2' max='2' value='-1' onchange="camAdj('home','bri',this.value)"></label>
 <label>Con<input type='range' min='-2' max='2' value='1' onchange="camAdj('home','con',this.value)"></label>
 <label>Sharp<input type='range' min='-2' max='2' value='1' onchange="camAdj('home','sharp',this.value)"></label>
@@ -162,30 +213,19 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <label>GCeil<input type='range' min='0' max='6' value='1' onchange="camAdj('home','gceil',this.value)"></label>
 <label>Gamma<input type='checkbox' onclick="camAdj('home','gma',this.checked?1:0)"></label>
 <label>Lens<input type='checkbox' onclick="camAdj('home','lenc',this.checked?1:0)"></label>
-<label>B&amp;W<input type='range' min='0' max='255' value='30' onchange="setThreshold('home',this.value)"></label>
-<label>Vol<input type='range' min='0' max='100' value='70' onchange="setVolume('home',this.value)"><span style='cursor:pointer' onclick="testSound('home')">&#9654;</span></label>
+<div class='group-title' data-i18n='match.post_section'>Post</div>
+<label style='grid-column:1 / -1'>B&amp;W<input type='range' min='0' max='255' value='30' onchange="setThreshold('home',this.value)"></label>
+<div class='group-title' data-i18n='match.audio_section'>Audio</div>
+<label>Vol<input type='range' min='0' max='100' value='70' onchange="setVolume('home',this.value)"><span class='play' onclick="testSound('home')">▶</span></label>
 <label>LED<input type='checkbox' onclick="setLed('home',this.checked?1:0)"></label>
 </div>
-<div class='roi-controls'>
-<button class='btn' onclick="moveRoi('home',0,-8)">&#9650;</button>
-<button class='btn' onclick="moveRoi('home',-8,0)">&#9664;</button>
-<button class='btn btn-rst' onclick="resetRoi('home')">RST</button>
-<button class='btn' onclick="moveRoi('home',8,0)">&#9654;</button>
-<button class='btn' onclick="moveRoi('home',0,8)">&#9660;</button>
-<span style='color:#666'>|</span>
-W<button class='btn' onclick="resizeRoi('home',-8,0)">&#8722;</button>
-<button class='btn' onclick="resizeRoi('home',8,0)">&#43;</button>
-H<button class='btn' onclick="resizeRoi('home',0,-8)">&#8722;</button>
-<button class='btn' onclick="resizeRoi('home',0,8)">&#43;</button>
 </div>
-<div class='roi-info' id='roi-home'></div>
-<div class='ctrl-row'>
-<button class='btn btn-tune' onclick='autotune("home")' data-i18n='match.tune_home'>&#9881; Auto-Tune</button>
-<button class='btn btn-cal' onclick='calibrate("home")' data-i18n='match.cal_home'>Calibrate Home</button>
+</details>
 </div>
-</div>
-<div class='feed-box'>
-<div class='feed-label'><span data-i18n='match.away_goal'>Away Goal</span> <span id='st-away' class='feed-status st-idle'>...</span></div>
+
+<!-- AWAY -->
+<div class='feed-box' id='box-away'>
+<div class='feed-head'><span data-i18n='match.away_goal'>Away Goal</span><span id='st-away' class='feed-status st-idle'>...</span></div>
 <div class='cam-wrap'>
 <img id='cam-away'/>
 <svg id='ov-away' viewBox='0 0 320 240' preserveAspectRatio='none'>
@@ -193,7 +233,29 @@ H<button class='btn' onclick="resizeRoi('home',0,-8)">&#8722;</button>
 <rect class='ov-dice' fill='none' stroke='#32cd32' stroke-width='2' style='display:none'/>
 </svg>
 </div>
+<div class='roi-bar'>
+<div class='dpad'>
+<div></div><button onclick="moveRoi('away',0,-8)">▲</button><div></div>
+<button onclick="moveRoi('away',-8,0)">◀</button>
+<button onclick="resetRoi('away')" style='font-size:0.55em'>RST</button>
+<button onclick="moveRoi('away',8,0)">▶</button>
+<div></div><button onclick="moveRoi('away',0,8)">▼</button><div></div>
+</div>
+<div class='resize'>
+<span>W</span><button onclick="resizeRoi('away',-8,0)">−</button><button onclick="resizeRoi('away',8,0)">+</button>
+<span>H</span><button onclick="resizeRoi('away',0,-8)">−</button><button onclick="resizeRoi('away',0,8)">+</button>
+</div>
+<div class='info' id='roi-away'></div>
+</div>
+<div class='feed-actions'>
+<button class='btn btn-tune' onclick='autotune("away")' data-i18n='match.tune'>⚙ Auto-Tune</button>
+<button class='btn btn-cal' onclick='calibrate("away")' data-i18n='match.cal'>🎯 Calibrate</button>
+</div>
+<details class='expert'>
+<summary data-i18n='match.expert'>⚙ Expert</summary>
+<div class='expert-body'>
 <div class='cam-sliders'>
+<div class='group-title' data-i18n='match.cam_section'>Camera</div>
 <label>Bri<input type='range' min='-2' max='2' value='-1' onchange="camAdj('away','bri',this.value)"></label>
 <label>Con<input type='range' min='-2' max='2' value='1' onchange="camAdj('away','con',this.value)"></label>
 <label>Sharp<input type='range' min='-2' max='2' value='1' onchange="camAdj('away','sharp',this.value)"></label>
@@ -202,34 +264,20 @@ H<button class='btn' onclick="resizeRoi('home',0,-8)">&#8722;</button>
 <label>GCeil<input type='range' min='0' max='6' value='1' onchange="camAdj('away','gceil',this.value)"></label>
 <label>Gamma<input type='checkbox' onclick="camAdj('away','gma',this.checked?1:0)"></label>
 <label>Lens<input type='checkbox' onclick="camAdj('away','lenc',this.checked?1:0)"></label>
-<label>B&amp;W<input type='range' min='0' max='255' value='30' onchange="setThreshold('away',this.value)"></label>
-<label>Vol<input type='range' min='0' max='100' value='70' onchange="setVolume('away',this.value)"><span style='cursor:pointer' onclick="testSound('away')">&#9654;</span></label>
+<div class='group-title' data-i18n='match.post_section'>Post</div>
+<label style='grid-column:1 / -1'>B&amp;W<input type='range' min='0' max='255' value='30' onchange="setThreshold('away',this.value)"></label>
+<div class='group-title' data-i18n='match.audio_section'>Audio</div>
+<label>Vol<input type='range' min='0' max='100' value='70' onchange="setVolume('away',this.value)"><span class='play' onclick="testSound('away')">▶</span></label>
 <label>LED<input type='checkbox' onclick="setLed('away',this.checked?1:0)"></label>
 </div>
-<div class='roi-controls'>
-<button class='btn' onclick="moveRoi('away',0,-8)">&#9650;</button>
-<button class='btn' onclick="moveRoi('away',-8,0)">&#9664;</button>
-<button class='btn btn-rst' onclick="resetRoi('away')">RST</button>
-<button class='btn' onclick="moveRoi('away',8,0)">&#9654;</button>
-<button class='btn' onclick="moveRoi('away',0,8)">&#9660;</button>
-<span style='color:#666'>|</span>
-W<button class='btn' onclick="resizeRoi('away',-8,0)">&#8722;</button>
-<button class='btn' onclick="resizeRoi('away',8,0)">&#43;</button>
-H<button class='btn' onclick="resizeRoi('away',0,-8)">&#8722;</button>
-<button class='btn' onclick="resizeRoi('away',0,8)">&#43;</button>
 </div>
-<div class='roi-info' id='roi-away'></div>
-<div class='ctrl-row'>
-<button class='btn btn-tune' onclick='autotune("away")' data-i18n='match.tune_away'>&#9881; Auto-Tune</button>
-<button class='btn btn-cal' onclick='calibrate("away")' data-i18n='match.cal_away'>Calibrate Away</button>
-</div>
+</details>
 </div>
 </div>
 
-<!-- Match controls -->
 <div id='controls'>
-<div class='ctrl-row'>
-<button class='btn btn-start' id='btn-start' onclick='matchCmd("start")' data-i18n='match.start'>Start Match</button>
+<div class='match-bar'>
+<button class='btn btn-start' id='btn-start' onclick='matchCmd("start")' data-i18n='match.start'>▶ Start Match</button>
 <button class='btn btn-pause' id='btn-pause' onclick='matchCmd("pause")' style='display:none' data-i18n='match.pause'>Pause</button>
 <button class='btn btn-resume' id='btn-resume' onclick='matchCmd("resume")' style='display:none' data-i18n='match.resume'>Resume</button>
 <button class='btn btn-reset' id='btn-reset' onclick='matchReset()' data-i18n='match.reset'>Reset</button>
@@ -237,13 +285,12 @@ H<button class='btn' onclick="resizeRoi('away',0,-8)">&#8722;</button>
 </div>
 </div>
 
-<!-- Goal log -->
 <div id='gol-log'></div>
 
 <script>
 var I18N={
 en:{
-'nav.menu':'\u2190 Menu',
+'nav.menu':'← Menu',
 'goal.flash':'GOOOL!',
 'var.title':'VAR - Video Review',
 'var.confirm':'Foi Gol',
@@ -251,68 +298,44 @@ en:{
 'var.annulled':'ANNULLED',
 'match.title':'gol-cam MATCH',
 'match.board_ips':'Board IPs',
-'match.home':'Home:',
-'match.away':'Away:',
+'match.home':'Home','match.away':'Away',
 'match.connect':'Connect',
 'match.enter_both':'Enter both IPs',
-'match.home_label':'HOME',
-'match.away_label':'AWAY',
-'match.home_goal':'Home Goal',
-'match.away_goal':'Away Goal',
-'match.cal_home':'Calibrate Home',
-'match.cal_away':'Calibrate Away',
-'match.tune_home':'⚙ Auto-Tune',
-'match.tune_away':'⚙ Auto-Tune',
-'match.start':'Start Match',
-'match.pause':'Pause',
-'match.resume':'Resume',
-'match.reset':'Reset',
-'match.end':'End Match',
-'match.offline':'OFFLINE',
-'match.ready':'READY',
-'match.idle':'IDLE',
-'match.cal':'CAL...',
-'match.playing':'PLAYING',
-'match.paused':'PAUSED',
+'match.home_label':'HOME','match.away_label':'AWAY',
+'match.home_goal':'Home Goal','match.away_goal':'Away Goal',
+'match.cal':'🎯 Calibrate','match.tune':'⚙ Auto-Tune',
+'match.expert':'⚙ Expert',
+'match.cam_section':'Camera','match.post_section':'Post','match.audio_section':'Audio',
+'match.start':'▶ Start Match','match.pause':'Pause','match.resume':'Resume',
+'match.reset':'Reset','match.end':'End Match',
+'match.offline':'OFFLINE','match.ready':'READY','match.idle':'IDLE',
+'match.cal_state':'CAL...','match.playing':'PLAYING','match.paused':'PAUSED',
 'match.goal_num':'GOL #%d (%s)',
-'match.scorer_home':'HOME',
-'match.scorer_away':'AWAY'
+'match.scorer_home':'HOME','match.scorer_away':'AWAY'
 },
 pt:{
-'nav.menu':'\u2190 Menu',
+'nav.menu':'← Menu',
 'goal.flash':'GOOOL!',
-'var.title':'VAR - Revis\u00e3o',
+'var.title':'VAR - Revisão',
 'var.confirm':'Foi Gol',
 'var.annul':'Anula',
 'var.annulled':'ANULADO',
 'match.title':'gol-cam JOGO',
 'match.board_ips':'IPs das Placas',
-'match.home':'Casa:',
-'match.away':'Fora:',
+'match.home':'Casa','match.away':'Fora',
 'match.connect':'Conectar',
 'match.enter_both':'Digite ambos os IPs',
-'match.home_label':'CASA',
-'match.away_label':'FORA',
-'match.home_goal':'Gol Casa',
-'match.away_goal':'Gol Fora',
-'match.cal_home':'Calibrar Casa',
-'match.cal_away':'Calibrar Fora',
-'match.tune_home':'⚙ Auto-Ajuste',
-'match.tune_away':'⚙ Auto-Ajuste',
-'match.start':'Iniciar Partida',
-'match.pause':'Pausar',
-'match.resume':'Continuar',
-'match.reset':'Reiniciar',
-'match.end':'Encerrar',
-'match.offline':'OFFLINE',
-'match.ready':'PRONTO',
-'match.idle':'AGUARDANDO',
-'match.cal':'CAL...',
-'match.playing':'JOGANDO',
-'match.paused':'PAUSADO',
+'match.home_label':'CASA','match.away_label':'FORA',
+'match.home_goal':'Gol Casa','match.away_goal':'Gol Fora',
+'match.cal':'🎯 Calibrar','match.tune':'⚙ Auto-Ajuste',
+'match.expert':'⚙ Avançado',
+'match.cam_section':'Câmera','match.post_section':'Pós','match.audio_section':'Áudio',
+'match.start':'▶ Iniciar','match.pause':'Pausar','match.resume':'Continuar',
+'match.reset':'Reiniciar','match.end':'Encerrar',
+'match.offline':'OFFLINE','match.ready':'PRONTO','match.idle':'AGUARDANDO',
+'match.cal_state':'CAL...','match.playing':'JOGANDO','match.paused':'PAUSADO',
 'match.goal_num':'GOL #%d (%s)',
-'match.scorer_home':'CASA',
-'match.scorer_away':'FORA'
+'match.scorer_home':'CASA','match.scorer_away':'FORA'
 }
 };
 var curLang='en';
@@ -341,26 +364,18 @@ let boards={home:{ip:'',online:false,goals:0,goalSeq:0,state:-1,calibrated:false
 let polling=null;
 let varEntry=null,varBtn=null,varSide=null;
 
-// Restore from localStorage
 try{
   const saved=JSON.parse(localStorage.getItem('gol-match'));
   if(saved){$('ip-home').value=saved.home||'';$('ip-away').value=saved.away||'';}
 }catch(e){}
 
-// Auto-detect: if accessed from a board, try to get peer info
 (async function(){
   try{
     const r=await fetch('/status');const d=await r.json();
     const myIp=location.hostname;
-    if(d.role==='home'){
-      $('ip-home').value=myIp;
-      if(d.peer)$('ip-away').value=d.peer;
-    }else if(d.role==='away'){
-      $('ip-away').value=myIp;
-      if(d.peer)$('ip-home').value=d.peer;
-    }else{
-      if(!$('ip-home').value)$('ip-home').value=myIp;
-    }
+    if(d.role==='home'){$('ip-home').value=myIp;if(d.peer)$('ip-away').value=d.peer;}
+    else if(d.role==='away'){$('ip-away').value=myIp;if(d.peer)$('ip-home').value=d.peer;}
+    else{if(!$('ip-home').value)$('ip-home').value=myIp;}
   }catch(e){}
 })();
 
@@ -373,10 +388,8 @@ function connect(){
   $('scoreboard').style.display='block';
   $('feeds').style.display='flex';
   $('controls').style.display='block';
-  // Start streams
   $('cam-home').src='http://'+h+':81/stream';
   $('cam-away').src='http://'+a+':81/stream';
-  // Start polling
   if(polling)clearInterval(polling);
   polling=setInterval(poll,500);
   poll();
@@ -393,27 +406,20 @@ async function pollBoard(side){
     const r=await fetch('http://'+b.ip+'/status',{signal:AbortSignal.timeout(2000)});
     const d=await r.json();
     b.online=true;
-    b.state=d.state;
-    b.calibrated=d.calibrated;
-    // Detect new goals
-    const prevGoals=b.goals;
-    b.goals=d.goals;
+    b.state=d.state;b.calibrated=d.calibrated;
+    const prevGoals=b.goals;b.goals=d.goals;
     if(d.goalSeq>b.goalSeq&&d.scored){
       b.goalSeq=d.goalSeq;
       flashGoal(side,b.goals);
       addGoalEntry(side,b.goals,b.ip);
-    }else if(d.goalSeq>b.goalSeq){
-      b.goalSeq=d.goalSeq;
-    }
-    // Update status indicator
+    }else if(d.goalSeq>b.goalSeq){b.goalSeq=d.goalSeq;}
     const el=$('st-'+side);
     if(d.state===2){el.textContent=t('match.playing');el.className='feed-status st-online';}
     else if(d.state===3){el.textContent=t('match.paused');el.className='feed-status st-online';}
     else if(d.state===0){el.textContent=d.calibrated?t('match.ready'):t('match.idle');el.className='feed-status st-idle';}
-    else{el.textContent=t('match.cal');el.className='feed-status st-idle';}
-    // Update ROI info + SVG overlays
+    else{el.textContent=t('match.cal_state');el.className='feed-status st-idle';}
     var ri=$(('roi-'+side));
-    if(ri&&d.roiW!==undefined)ri.textContent='ROI: '+d.roiW+'x'+d.roiH+' offset:'+d.roiX+','+d.roiY;
+    if(ri&&d.roiW!==undefined)ri.textContent=d.roiW+'×'+d.roiH+' @'+d.roiX+','+d.roiY;
     var ov=$(('ov-'+side));
     if(ov&&d.roiW!==undefined){
       var roi=ov.querySelector('.ov-roi');
@@ -435,18 +441,12 @@ async function pollBoard(side){
 }
 
 function updateControls(){
-  // Score
-  // Home camera watches home goal — goals scored there count for AWAY (opponent scored)
-  // Away camera watches away goal — goals scored there count for HOME
   $('score-home').textContent=boards.away.goals;
   $('score-away').textContent=boards.home.goals;
-
   const anyPlaying=boards.home.state===2||boards.away.state===2;
   const anyPaused=boards.home.state===3||boards.away.state===3;
   const inGame=anyPlaying||anyPaused;
-  const bothIdle=boards.home.state===0&&boards.away.state===0;
   const anyCalibrated=boards.home.calibrated||boards.away.calibrated;
-
   $('btn-start').style.display=(!inGame&&anyCalibrated)?'':'none';
   $('btn-pause').style.display=anyPlaying?'':'none';
   $('btn-resume').style.display=(anyPaused&&!anyPlaying)?'':'none';
@@ -461,12 +461,10 @@ function flashGoal(side){
 
 function addGoalEntry(side,goalNum,ip){
   const glog=$('gol-log');
-  // Which team scored? Camera at home goal detects away team scoring, and vice versa
   const scorerKey=side==='home'?'match.scorer_away':'match.scorer_home';
   const scorer=t(scorerKey);
   const totalHome=boards.away.goals,totalAway=boards.home.goals;
   const snapUrl='http://'+ip+'/goal-snapshot?t='+Date.now();
-
   const e=document.createElement('div');e.className='gol-entry';
   e.onclick=function(){showLightbox(this.querySelector('img').src);};
   const img=document.createElement('img');img.src=snapUrl;
@@ -474,11 +472,10 @@ function addGoalEntry(side,goalNum,ip){
   const num=document.createElement('div');num.className='gol-num';
   num.textContent=t('match.goal_num',goalNum,scorer);
   const sd=document.createElement('div');sd.className='gol-side';
-  sd.textContent=totalHome+' x '+totalAway;
+  sd.textContent=totalHome+' × '+totalAway;
   const tm=document.createElement('div');tm.className='gol-time';
   tm.textContent=new Date().toLocaleTimeString();
   info.appendChild(num);info.appendChild(sd);info.appendChild(tm);
-
   const vb=document.createElement('button');vb.className='btn-var';
   vb.textContent='VAR';
   vb.onclick=function(ev){ev.stopPropagation();
@@ -495,7 +492,6 @@ function showLightbox(src){
   $('lightbox').style.display='flex';
   $('lightbox').onclick=function(){this.style.display='none';};
 }
-
 function showVAR(src,entry,btn,side){
   varEntry=entry;varBtn=btn;varSide=side;
   $('lb-img').src=src;$('lb-title').textContent=t('var.title');
@@ -503,7 +499,6 @@ function showVAR(src,entry,btn,side){
   $('lightbox').style.display='flex';
   $('lightbox').onclick=null;
 }
-
 $('btn-lb-foi').onclick=function(){$('lightbox').style.display='none';};
 $('btn-lb-anula').onclick=function(){
   if(!varEntry||!varSide)return;
@@ -519,23 +514,18 @@ $('btn-lb-anula').onclick=function(){
 async function camAdj(side,param,val){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/cam?'+param+'='+val);}
-
 async function setThreshold(side,val){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/threshold?val='+val);}
-
 async function setVolume(side,val){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/volume?val='+val);}
-
 async function setLed(side,val){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/led?val='+val);}
-
 async function testSound(side){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/test-sound');}
-
 async function moveRoi(side,dx,dy){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/roi?dx='+dx+'&dy='+dy);}
@@ -545,18 +535,13 @@ async function resizeRoi(side,dw,dh){
 async function resetRoi(side){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/roi?x=0&y=0');}
-
 async function calibrate(side){
-  const ip=boards[side].ip;
-  if(!ip)return;
-  await fetch('http://'+ip+'/calibrate');
-}
+  const ip=boards[side].ip;if(!ip)return;
+  await fetch('http://'+ip+'/calibrate');}
 
 function setMatchSlider(s,v){
   if(v===undefined||v===null||Number.isNaN(v))return;
-  s.value=v;s.setAttribute('value',v);
-  s.dispatchEvent(new Event('input',{bubbles:true}));
-}
+  s.value=v;s.setAttribute('value',v);}
 
 function syncMatchSliders(panel,d,useCur){
   if(!panel)return;
@@ -582,15 +567,12 @@ function syncMatchSliders(panel,d,useCur){
 async function autotune(side){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/autotune');
-  const panel=document.querySelector('#cam-'+side).closest('.feed-box');
+  const panel=$('box-'+side);
   const tick=setInterval(async()=>{
     try{const r=await fetch('http://'+ip+'/status');const d=await r.json();
       if(d.autoDone===1){
         clearInterval(tick);
         syncMatchSliders(panel,d,false);
-        setTimeout(async()=>{try{const r2=await fetch('http://'+ip+'/status');
-          const d2=await r2.json();if(d2.autoDone===1)syncMatchSliders(panel,d2,false);
-        }catch(e){}},400);
       }else if(d.autoStage>0){
         syncMatchSliders(panel,d,true);
       }
@@ -616,6 +598,5 @@ function matchReset(){
 }
 
 document.addEventListener('DOMContentLoaded',function(){setLang(curLang);});
-</script>
-</body></html>
+</script></body></html>
 )rawliteral";

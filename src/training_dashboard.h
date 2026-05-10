@@ -6,103 +6,116 @@ static const char TRAINING_DASHBOARD_HTML[] = R"rawliteral(
 <meta name='viewport' content='width=device-width,initial-scale=1'>
 <style>
 *{box-sizing:border-box}
-body{background:#111;color:#fff;font-family:system-ui,sans-serif;
-display:flex;flex-direction:column;align-items:center;margin:0;padding:15px}
-h1{margin:5px 0;font-size:1.8em}
-img{max-width:100%;border:2px solid #333;border-radius:8px;margin:10px 0}
-#score{font-size:5em;font-weight:bold;margin:5px 0;transition:all 0.3s}
-#gol-flash{position:fixed;top:0;left:0;width:100%;height:100%;
-background:rgba(0,255,0,0.3);pointer-events:none;opacity:0;transition:opacity 0.5s}
-#gol-text{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
-font-size:6em;font-weight:bold;color:#0f0;opacity:0;transition:opacity 0.5s;
-pointer-events:none;text-shadow:0 0 30px #0f0}
-.active{opacity:1 !important}
-.btn{padding:10px 20px;font-size:1em;border:none;border-radius:8px;
-cursor:pointer;font-weight:bold;transition:all 0.2s}
-.btn:active{transform:scale(0.95)}
-.btn-cal{background:#f90;color:#000}
-.btn-tune{background:#36c;color:#fff}
-.drop-sel{margin:6px 0}
-.btn-start{background:#0a0;color:#fff}
-#info{color:#888;font-size:0.85em;margin:5px;text-align:center}
-#cal-info{color:#f90;font-size:0.9em;margin:5px;display:none}
-#cal-snap{max-width:100%;border:2px solid #f90;border-radius:8px;margin:8px 0;display:none}
-#cal-feedback{color:#fff;font-size:0.85em;margin:5px;padding:8px 12px;
-background:#222;border-radius:6px;display:none;max-width:400px;text-align:center}
-.cal-ok{border-left:3px solid #0f0}.cal-fail{border-left:3px solid #f44}
-#game-bar{display:none;width:100%;max-width:400px;background:#1a1a1a;
-border:1px solid #333;border-radius:8px;padding:8px;margin:4px 0}
-#game-bar .bar-row{display:flex;align-items:center;justify-content:center;gap:8px}
-#game-bar .btn{padding:8px 16px;font-size:0.9em}
-.btn-pause{background:#ff0;color:#000}
-.btn-resume{background:#0a0;color:#fff}
-.btn-reset{background:#555;color:#fff}
-.btn-end{background:#c00;color:#fff}
-#countdown{display:none;text-align:center;margin:4px 0}
-#cd-bar{width:100%;max-width:400px;height:6px;background:#333;border-radius:3px;
-overflow:hidden;margin:4px 0}
-#cd-fill{height:100%;background:#0f0;transition:width 0.4s linear;width:100%}
-#cd-text{color:#0f0;font-size:0.85em;font-weight:bold}
-#gol-log{width:100%;max-width:400px;margin:10px 0}
-.gol-entry{background:#1a1a1a;border:1px solid #333;border-radius:8px;
-margin:8px 0;padding:10px;display:flex;gap:10px;align-items:center;cursor:pointer}
-.gol-entry:active{background:#222}
-.gol-entry img{width:120px;border-radius:4px;border:2px solid #0f0}
-.gol-entry .gol-info{flex:1;font-size:0.85em}
-.gol-entry .gol-num{color:#0f0;font-size:1.4em;font-weight:bold}
-.gol-entry .gol-time{color:#888;font-size:0.75em}
-.btn-var{background:#c00;color:#fff;padding:6px 12px;font-size:0.8em;
-border:none;border-radius:6px;cursor:pointer;font-weight:bold}
-.btn-var:active{transform:scale(0.95)}
+:root{
+--bg:#0a0a0a;--card:#161616;--border:#262626;--muted:#888;
+--accent:#0ff;--green:#0a0;--orange:#f90;--blue:#36c;--red:#c00;--yellow:#ff0
+}
+body{background:var(--bg);color:#fff;font-family:system-ui,-apple-system,sans-serif;
+margin:0;padding:0;min-height:100vh;display:flex;flex-direction:column;align-items:center}
+header{display:flex;align-items:center;gap:12px;padding:10px 16px;width:100%;
+max-width:540px;border-bottom:1px solid var(--border)}
+header .back{color:var(--accent);text-decoration:none;font-size:0.9em;flex:0 0 auto}
+header h1{margin:0;font-size:1.25em;flex:1;text-align:center;letter-spacing:0.5px}
+#state-badge{font-size:0.7em;padding:3px 10px;border-radius:10px;font-weight:600;letter-spacing:0.5px}
+.s-idle{background:#2a2a2a;color:#aaa}
+.s-cal{background:var(--orange);color:#000}
+.s-play{background:var(--green);color:#fff}
+.s-pause{background:var(--yellow);color:#000}
+main{width:100%;max-width:540px;padding:0 12px 24px;display:flex;flex-direction:column;align-items:center;gap:10px}
+#score{font-size:4.5em;font-weight:800;line-height:1;color:var(--green);
+text-shadow:0 0 20px rgba(0,255,80,0.4);margin:8px 0}
+.cam-card{width:100%;background:var(--card);border:1px solid var(--border);
+border-radius:12px;padding:8px;margin-top:10px}
+.cam-wrap{position:relative;width:100%;line-height:0;border-radius:8px;overflow:hidden}
+.cam-wrap img{width:100%;display:block}
+.cam-wrap svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
+.roi-bar{display:flex;align-items:center;justify-content:space-between;
+gap:10px;margin-top:8px;font-size:0.78em;color:var(--muted)}
+.roi-bar .dpad{display:grid;grid-template-columns:repeat(3,32px);grid-template-rows:repeat(3,28px);gap:2px}
+.roi-bar .dpad button{padding:0;background:#222;color:#fff;border:1px solid #333;
+border-radius:4px;font-size:0.85em;cursor:pointer}
+.roi-bar .dpad button:active{background:#333}
+.roi-bar .resize{display:flex;flex-wrap:wrap;gap:4px;align-items:center;justify-content:center;font-size:0.78em}
+.roi-bar .resize button{padding:4px 8px;background:#222;color:#fff;border:1px solid #333;border-radius:4px;cursor:pointer;min-width:28px}
+.roi-bar .resize button:active{background:#333}
+.roi-bar .info{flex:1;text-align:right;color:var(--accent);font-size:0.72em;font-family:ui-monospace,monospace}
+.actions{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;width:100%;margin-top:6px}
+.btn{padding:14px 22px;font-size:1em;border:none;border-radius:10px;
+cursor:pointer;font-weight:700;transition:transform 0.1s,filter 0.15s}
+.btn:active{transform:scale(0.96)}
+.btn:disabled{filter:grayscale(0.7) brightness(0.7);cursor:default}
+.btn-cal{background:var(--orange);color:#000}
+.btn-tune{background:var(--blue);color:#fff}
+.btn-start{background:var(--green);color:#fff;font-size:1.1em;padding:16px 28px}
+.btn-pause{background:var(--yellow);color:#000}
+.btn-resume{background:var(--green);color:#fff}
+.btn-reset{background:#444;color:#fff}
+.btn-end{background:var(--red);color:#fff}
+#game-bar{display:none;width:100%;background:var(--card);border:1px solid var(--border);
+border-radius:10px;padding:10px}
+#game-bar .bar-row{display:flex;flex-wrap:wrap;gap:6px;justify-content:center}
+#game-bar .btn{padding:10px 16px;font-size:0.9em}
+#countdown{display:none;text-align:center;width:100%}
+#cd-bar{width:100%;height:5px;background:#222;border-radius:3px;overflow:hidden;margin:4px 0}
+#cd-fill{height:100%;background:var(--green);transition:width 0.4s linear;width:100%}
+#cd-text{color:var(--green);font-size:0.82em;font-weight:600}
+#cal-feedback{width:100%;font-size:0.85em;padding:10px 14px;background:var(--card);
+border:1px solid var(--border);border-radius:8px;display:none;text-align:center}
+.cal-ok{border-left:3px solid var(--green) !important}
+.cal-fail{border-left:3px solid var(--red) !important}
+#cal-snap{max-width:100%;border:2px solid var(--orange);border-radius:8px;display:none}
+#cal-info{color:var(--orange);font-size:0.8em;display:none;text-align:center}
+#info{color:var(--muted);font-size:0.85em;text-align:center}
+details.expert,details.logs{width:100%;background:var(--card);border:1px solid var(--border);
+border-radius:10px;margin-top:6px;overflow:hidden}
+details>summary{cursor:pointer;padding:10px 14px;font-size:0.85em;font-weight:600;
+color:var(--accent);user-select:none;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+details>summary::before{content:'\25B8 ';display:inline-block;transition:transform 0.15s}
+details[open]>summary::before{transform:rotate(90deg)}
+.expert-body{padding:8px 14px 14px;display:flex;flex-direction:column;gap:14px}
+.cam-sliders{display:grid;grid-template-columns:repeat(2,1fr);gap:6px 16px;font-size:0.78em;color:var(--muted)}
+.cam-sliders .group-title{grid-column:1 / -1;color:var(--accent);font-weight:600;
+font-size:0.82em;border-bottom:1px solid var(--border);padding-bottom:3px;margin-top:4px}
+.cam-sliders label{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.cam-sliders input[type=range]{flex:1;min-width:60px;accent-color:var(--accent)}
+.cam-sliders input[type=checkbox]{accent-color:var(--accent)}
+.cam-sliders .play{cursor:pointer;color:var(--accent);padding-left:4px}
+.log-box{padding:6px 12px 12px}
+#gol-log{display:flex;flex-direction:column;gap:6px}
+.gol-entry{background:#0e0e0e;border:1px solid var(--border);border-radius:8px;
+padding:8px;display:flex;gap:8px;align-items:center;cursor:pointer}
+.gol-entry:active{background:#1a1a1a}
+.gol-entry img{width:90px;border-radius:4px;border:2px solid var(--green)}
+.gol-entry .gol-info{flex:1;font-size:0.82em}
+.gol-entry .gol-num{color:var(--green);font-size:1.2em;font-weight:bold}
+.gol-entry .gol-time{color:var(--muted);font-size:0.72em}
+.btn-var{background:var(--red);color:#fff;padding:5px 10px;font-size:0.75em;
+border:none;border-radius:5px;cursor:pointer;font-weight:bold}
 .gol-annulled{opacity:0.4}
 .gol-annulled .gol-num{text-decoration:line-through;color:#f44}
-#lightbox{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.9);
-display:none;flex-direction:column;justify-content:center;align-items:center;z-index:100}
-#lightbox img{max-width:95%;max-height:70%;border:3px solid #0f0;border-radius:8px}
-#lb-title{color:#fff;font-size:1.5em;font-weight:bold;margin:10px 0}
-#lb-buttons{display:none;gap:20px;margin:15px 0}
-.btn-foi{background:#0a0;color:#fff;padding:14px 30px;font-size:1.2em;
+#console{height:140px;background:#040404;border:1px solid var(--border);border-radius:6px;
+padding:6px;font-family:ui-monospace,monospace;font-size:0.7em;color:#0f0;overflow-y:auto;line-height:1.4}
+.log-reject{color:#f44}.log-dice{color:#0f0}.log-cal{color:var(--orange)}
+#gol-flash{position:fixed;top:0;left:0;width:100%;height:100%;
+background:rgba(0,255,0,0.3);pointer-events:none;opacity:0;transition:opacity 0.5s;z-index:50}
+#gol-text{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);
+font-size:6em;font-weight:bold;color:#0f0;opacity:0;transition:opacity 0.5s;
+pointer-events:none;text-shadow:0 0 30px #0f0;z-index:51}
+.active{opacity:1 !important}
+#lightbox{position:fixed;inset:0;background:rgba(0,0,0,0.92);
+display:none;flex-direction:column;justify-content:center;align-items:center;z-index:100;padding:16px}
+#lightbox img{max-width:95%;max-height:65%;border:3px solid var(--green);border-radius:8px}
+#lb-title{color:#fff;font-size:1.3em;font-weight:bold;margin:10px 0}
+#lb-buttons{display:none;gap:14px;margin:12px 0}
+.btn-foi{background:var(--green);color:#fff;padding:14px 28px;font-size:1.1em;
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
-.btn-anula{background:#c00;color:#fff;padding:14px 30px;font-size:1.2em;
+.btn-anula{background:var(--red);color:#fff;padding:14px 28px;font-size:1.1em;
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
-#console{width:100%;max-width:400px;height:180px;background:#0a0a0a;
-border:1px solid #333;border-radius:6px;margin:10px 0;padding:8px;
-font-family:monospace;font-size:0.7em;color:#0f0;overflow-y:auto;
-line-height:1.4}
-.log-reject{color:#f44}.log-dice{color:#0f0}.log-cal{color:#f90}
-.idle-controls{display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin:8px 0}
-#state-badge{font-size:0.8em;padding:4px 12px;border-radius:12px;margin:5px}
-.s-idle{background:#333;color:#888}
-.s-cal{background:#f90;color:#000}
-.s-play{background:#0a0;color:#fff}
-.s-pause{background:#ff0;color:#000}
-.dpad{display:grid;grid-template-columns:40px 40px 40px;grid-template-rows:40px 40px 40px;
-gap:4px;margin:8px 0}
-.dpad .btn{padding:0;width:40px;height:40px;font-size:1.2em;background:#333;color:#fff;
-border-radius:6px;display:flex;align-items:center;justify-content:center}
-.dpad .btn:active{background:#555}
-.dpad .btn-center{background:#555;font-size:0.7em}
-#roi-info{color:#0ff;font-size:0.8em;margin:2px 0}
-.drop-sel{background:#222;color:#fff;border:1px solid #555;border-radius:8px;
-padding:8px 12px;font-size:0.85em;width:100%;max-width:300px}
-.main-row{display:flex;gap:12px;width:100%;max-width:700px;align-items:flex-start;margin:8px 0}
-.cam-panel{flex:1;min-width:0}
-.cam-panel img{width:100%;margin:0;display:block}
-.cam-wrap{position:relative;width:100%;line-height:0}
-.cam-wrap svg{position:absolute;inset:0;width:100%;height:100%;pointer-events:none}
-.ctrl-panel{display:flex;flex-direction:column;gap:6px;min-width:120px;font-size:0.75em;color:#888}
-.ctrl-panel label{display:flex;align-items:center;justify-content:space-between;gap:4px;white-space:nowrap}
-.ctrl-panel input[type=range]{width:80px;accent-color:#0ff}
-.ctrl-panel input[type=checkbox]{accent-color:#0ff}
-.ctrl-panel .ctrl-head{color:#0ff;font-weight:bold;font-size:0.9em;border-bottom:1px solid #333;padding-bottom:3px;margin-top:4px}
-@media(max-width:500px){.main-row{flex-direction:column}.ctrl-panel{flex-direction:row;flex-wrap:wrap;gap:4px 10px}}
-.roi-resize{display:flex;gap:4px;align-items:center;justify-content:center;margin:4px 0;font-size:0.8em;color:#888}
-.roi-resize .btn{padding:6px 10px;font-size:0.8em;background:#333;color:#fff;min-width:34px}
-.roi-resize .btn:active{background:#555}
-.lang-picker{position:fixed;top:8px;right:8px;display:flex;gap:4px;z-index:200}
-.lang-btn{padding:4px 8px;font-size:0.75em;border:1px solid #555;border-radius:4px;
-background:#222;color:#aaa;cursor:pointer;font-weight:bold}
-.lang-btn.active{background:#0f0;color:#000;border-color:#0f0}
+.lang-picker{position:fixed;top:8px;right:8px;display:flex;gap:4px;z-index:90}
+.lang-btn{padding:3px 8px;font-size:0.7em;border:1px solid #333;border-radius:4px;
+background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
+.lang-btn.active{background:var(--accent);color:#000;border-color:var(--accent)}
 </style></head><body>
 <div class='lang-picker'>
 <button class='lang-btn' onclick="setLang('en')">EN</button>
@@ -118,13 +131,62 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <button class='btn-anula' onclick='varAnula()' data-i18n='var.annul'>Anula</button>
 </div>
 </div>
+<header>
+<a class='back' href='/' data-i18n='nav.menu'>&#8592; Menu</a>
 <h1>gol-cam</h1>
-<a href='/' data-i18n='nav.menu'>&#8592; Menu</a>
 <div id='state-badge' class='s-idle' data-i18n='train.idle'>IDLE</div>
+</header>
+<main>
 <div id='score' style='display:none'>0</div>
-<div class='main-row'>
-<div class='ctrl-panel'>
-<div class='ctrl-head'>Camera</div>
+<div class='cam-card'>
+<div class='cam-wrap'>
+<img id='cam'/>
+<svg id='cam-overlay' viewBox='0 0 320 240' preserveAspectRatio='none'>
+<rect id='ov-roi' x='0' y='0' width='0' height='0' fill='none' stroke='#ffff00' stroke-width='2'/>
+<rect id='ov-dice' x='0' y='0' width='0' height='0' fill='none' stroke='#32cd32' stroke-width='2' style='display:none'/>
+</svg>
+</div>
+<div class='roi-bar'>
+<div class='dpad'>
+<div></div><button onclick="moveRoi(0,-8)">&#9650;</button><div></div>
+<button onclick="moveRoi(-8,0)">&#9664;</button>
+<button onclick="moveRoi(0,0,true)" style='font-size:0.6em'>RST</button>
+<button onclick="moveRoi(8,0)">&#9654;</button>
+<div></div><button onclick="moveRoi(0,8)">&#9660;</button><div></div>
+</div>
+<div class='resize'>
+<span>W</span><button onclick="resizeRoi(-8,0)">&minus;</button><button onclick="resizeRoi(8,0)">+</button>
+<span>H</span><button onclick="resizeRoi(0,-8)">&minus;</button><button onclick="resizeRoi(0,8)">+</button>
+</div>
+<div class='info' id='roi-info'></div>
+</div>
+</div>
+<div class='actions' id='idle-controls'>
+<button class='btn btn-tune' id='btn-tune' onclick='autotune()' data-i18n='train.autotune'>&#9881; Auto-Tune</button>
+<button class='btn btn-cal' id='btn-cal' onclick='calibrate()' data-i18n='train.calibrate'>&#127919; Calibrate</button>
+<button class='btn btn-start' id='btn-start' onclick='startGame()' style='display:none' data-i18n='train.start'>&#9654; Start</button>
+</div>
+<div id='game-bar'>
+<div class='bar-row'>
+<button class='btn btn-pause' id='btn-pause' onclick='pauseGame()' data-i18n='train.pause'>Pause</button>
+<button class='btn btn-resume' id='btn-resume' onclick='resumeGame()' style='display:none' data-i18n='train.resume'>Resume</button>
+<button class='btn btn-reset' id='btn-reset' onclick='resetGame()' data-i18n='train.reset'>Reset</button>
+<button class='btn btn-end' id='btn-stop' onclick='stopGame()' data-i18n='train.end'>End</button>
+</div>
+</div>
+<div id='countdown'>
+<div id='cd-bar'><div id='cd-fill'></div></div>
+<div id='cd-text'></div>
+</div>
+<div id='cal-feedback'></div>
+<img id='cal-snap'/>
+<div id='cal-info'></div>
+<div id='info' data-i18n='train.hint_calibrate'>Place the dadinho in view, then press Calibrate</div>
+<details class='expert'>
+<summary data-i18n='train.expert'>&#9881; Expert Settings</summary>
+<div class='expert-body'>
+<div class='cam-sliders'>
+<div class='group-title' data-i18n='train.cam_section'>Camera</div>
 <label>Bri<input type='range' min='-2' max='2' value='-1' onchange="camAdj('bri',this.value)"></label>
 <label>Con<input type='range' min='-2' max='2' value='1' onchange="camAdj('con',this.value)"></label>
 <label>Sharp<input type='range' min='-2' max='2' value='1' onchange="camAdj('sharp',this.value)"></label>
@@ -133,118 +195,90 @@ background:#222;color:#aaa;cursor:pointer;font-weight:bold}
 <label>GCeil<input type='range' min='0' max='6' value='1' onchange="camAdj('gceil',this.value)"></label>
 <label>Gamma<input type='checkbox' onclick="camAdj('gma',this.checked?1:0)"></label>
 <label>Lens<input type='checkbox' onclick="camAdj('lenc',this.checked?1:0)"></label>
-<div class='ctrl-head'>Post</div>
-<label>B&amp;W<input type='range' min='0' max='255' value='30' onchange="fetch('/threshold?val='+this.value)"></label>
-<div class='ctrl-head'>Audio</div>
-<label>Vol<input type='range' min='0' max='100' value='70' onchange="fetch('/volume?val='+this.value)"><span style='cursor:pointer' onclick="fetch('/test-sound')">&#9654;</span></label>
+<div class='group-title' data-i18n='train.post_section'>Post-process</div>
+<label style='grid-column:1 / -1'>B&amp;W<input type='range' min='0' max='255' value='30' onchange="fetch('/threshold?val='+this.value)"></label>
+<div class='group-title' data-i18n='train.audio_section'>Audio</div>
+<label>Vol<input type='range' min='0' max='100' value='70' onchange="fetch('/volume?val='+this.value)"><span class='play' onclick="fetch('/test-sound')">&#9654;</span></label>
 <label>LED<input type='checkbox' onclick="fetch('/led?val='+(this.checked?1:0))"></label>
 </div>
-<div class='cam-panel'>
-<div class='cam-wrap'>
-<img id='cam'/>
-<svg id='cam-overlay' viewBox='0 0 320 240' preserveAspectRatio='none'>
-<rect id='ov-roi' x='0' y='0' width='0' height='0' fill='none' stroke='#ffff00' stroke-width='2'/>
-<rect id='ov-dice' x='0' y='0' width='0' height='0' fill='none' stroke='#32cd32' stroke-width='2' style='display:none'/>
-</svg>
 </div>
-<div style='display:flex;gap:12px;justify-content:center;align-items:flex-start;margin-top:4px'>
-<div class='dpad'>
-<div></div><button class='btn' onclick="moveRoi(0,-8)">&#9650;</button><div></div>
-<button class='btn' onclick="moveRoi(-8,0)">&#9664;</button>
-<button class='btn btn-center' onclick="moveRoi(0,0,true)">RST</button>
-<button class='btn' onclick="moveRoi(8,0)">&#9654;</button>
-<div></div><button class='btn' onclick="moveRoi(0,8)">&#9660;</button><div></div>
-</div>
-<div>
-<div class='roi-resize'>
-W<button class='btn' onclick="resizeRoi(-8,0)">&#8722;</button>
-<button class='btn' onclick="resizeRoi(8,0)">&#43;</button>
-H<button class='btn' onclick="resizeRoi(0,-8)">&#8722;</button>
-<button class='btn' onclick="resizeRoi(0,8)">&#43;</button>
-</div>
-<div id='roi-info'></div>
-</div>
-</div>
-</div>
-</div>
-<div id='game-bar'>
-<div class='bar-row'>
-<button class='btn btn-pause' id='btn-pause' onclick='pauseGame()' data-i18n='train.pause'>Pause</button>
-<button class='btn btn-resume' id='btn-resume' onclick='resumeGame()' style='display:none' data-i18n='train.resume'>Resume</button>
-<button class='btn btn-reset' id='btn-reset' onclick='resetGame()' data-i18n='train.reset'>Reset</button>
-<button class='btn btn-end' id='btn-stop' onclick='stopGame()' data-i18n='train.end'>End Game</button>
-</div>
-</div>
-<div id='countdown'>
-<div id='cd-bar'><div id='cd-fill'></div></div>
-<div id='cd-text'></div>
-</div>
-<div class='idle-controls' id='idle-controls'>
-<button class='btn btn-tune' id='btn-tune' onclick='autotune()' data-i18n='train.autotune'>&#9881; Auto-Tune</button>
-<button class='btn btn-cal' id='btn-cal' onclick='calibrate()' data-i18n='train.calibrate'>Calibrate Dice</button>
-<button class='btn btn-start' id='btn-start' onclick='startGame()' style='display:none' data-i18n='train.start'>Start Game</button>
-</div>
-<div id='cal-feedback'></div>
-<img id='cal-snap'/>
-<div id='cal-info'></div>
-<div id='info' data-i18n='train.hint_calibrate'>Place the dadinho in view, then press Calibrate</div>
-<div id='gol-log'></div>
-<div id='console'></div>
+</details>
+<details class='logs'>
+<summary data-i18n='train.goals_section'>Goals</summary>
+<div class='log-box'><div id='gol-log'></div></div>
+</details>
+<details class='logs'>
+<summary data-i18n='train.console_section'>Console</summary>
+<div class='log-box'><div id='console'></div></div>
+</details>
+</main>
 <script>
 var I18N={
 en:{
-'nav.menu':'\u2190 Menu',
+'nav.menu':'← Menu',
 'goal.flash':'GOOOL!',
 'var.title':'VAR - Video Review',
 'var.confirm':'Foi Gol',
 'var.annul':'Annul',
 'var.annulled':'ANNULLED',
-'train.calibrate':'Calibrate Dice',
+'train.calibrate':'\u{1F3AF} Calibrate',
 'train.calibrating':'Calibrating...',
 'train.analyzing':'Analyzing frame...',
 'train.autotune':'⚙ Auto-Tune',
 'train.autotuning':'Auto-tuning contrast...',
-'train.start':'Start Game',
+'train.start':'▶ Start',
 'train.pause':'Pause',
 'train.resume':'Resume',
 'train.reset':'Reset',
-'train.end':'End Game',
+'train.end':'End',
 'train.idle':'IDLE',
-'train.cal_badge':'CALIBRATING...',
+'train.cal_badge':'CALIBRATING',
 'train.playing':'PLAYING',
 'train.paused':'PAUSED',
 'train.hint_calibrate':'Place the dadinho in view, then press Calibrate',
-'train.hint_calibrated':'Calibrated! Press Start Game',
+'train.hint_calibrated':'Calibrated! Press Start',
 'train.detecting_in':'Detecting in %ds...',
 'train.disconnected':'disconnected',
-'train.gol_num':'GOL #%d'
+'train.gol_num':'GOL #%d',
+'train.expert':'⚙ Expert Settings',
+'train.cam_section':'Camera',
+'train.post_section':'Post-process',
+'train.audio_section':'Audio',
+'train.goals_section':'Goals',
+'train.console_section':'Console'
 },
 pt:{
-'nav.menu':'\u2190 Menu',
+'nav.menu':'← Menu',
 'goal.flash':'GOOOL!',
-'var.title':'VAR - Revis\u00e3o',
+'var.title':'VAR - Revisão',
 'var.confirm':'Foi Gol',
 'var.annul':'Anula',
 'var.annulled':'ANULADO',
-'train.calibrate':'Calibrar Dadinho',
+'train.calibrate':'\u{1F3AF} Calibrar',
 'train.calibrating':'Calibrando...',
 'train.analyzing':'Analisando frame...',
 'train.autotune':'⚙ Auto-Ajuste',
 'train.autotuning':'Ajustando contraste...',
-'train.start':'Iniciar Jogo',
+'train.start':'▶ Iniciar',
 'train.pause':'Pausar',
 'train.resume':'Continuar',
 'train.reset':'Reiniciar',
-'train.end':'Encerrar Jogo',
+'train.end':'Encerrar',
 'train.idle':'AGUARDANDO',
-'train.cal_badge':'CALIBRANDO...',
+'train.cal_badge':'CALIBRANDO',
 'train.playing':'JOGANDO',
 'train.paused':'PAUSADO',
-'train.hint_calibrate':'Coloque o dadinho na c\u00e2mera e pressione Calibrar',
-'train.hint_calibrated':'Calibrado! Pressione Iniciar Jogo',
+'train.hint_calibrate':'Coloque o dadinho na câmera e pressione Calibrar',
+'train.hint_calibrated':'Calibrado! Pressione Iniciar',
 'train.detecting_in':'Detectando em %ds...',
 'train.disconnected':'desconectado',
-'train.gol_num':'GOL #%d'
+'train.gol_num':'GOL #%d',
+'train.expert':'⚙ Avançado',
+'train.cam_section':'Câmera',
+'train.post_section':'Pós-processo',
+'train.audio_section':'Áudio',
+'train.goals_section':'Gols',
+'train.console_section':'Console'
 }
 };
 var curLang='en';
@@ -291,8 +325,7 @@ $('lb-img').src=src;$('lb-title').textContent=t('var.title');
 $('lb-buttons').style.display='flex';
 $('lightbox').style.display='flex';
 $('lightbox').onclick=null;}
-function varConfirm(){
-$('lightbox').style.display='none';}
+function varConfirm(){$('lightbox').style.display='none';}
 function varAnula(){
 if(!varEntry)return;
 fetch('/deduct').then(()=>{
@@ -301,15 +334,11 @@ if(varBtn){varBtn.textContent=t('var.annulled');varBtn.disabled=true;
 varBtn.style.background='#555';}});
 $('lightbox').style.display='none';}
 
-async function camAdj(param,val){
-await fetch('/cam?'+param+'='+val);}
-
+async function camAdj(param,val){await fetch('/cam?'+param+'='+val);}
 async function moveRoi(dx,dy,reset){
 if(reset)await fetch('/roi?x=0&y=0');
 else await fetch('/roi?dx='+dx+'&dy='+dy);}
-
-async function resizeRoi(dw,dh){
-await fetch('/roi?dw='+dw+'&dh='+dh);}
+async function resizeRoi(dw,dh){await fetch('/roi?dw='+dw+'&dh='+dh);}
 
 async function calibrate(){
 $('btn-cal').textContent=t('train.calibrating');
@@ -332,8 +361,7 @@ $('btn-cal').disabled=false;},1500);}
 
 function setSlider(s,v){
 if(v===undefined||v===null||Number.isNaN(v))return;
-s.value=v;s.setAttribute('value',v);
-s.dispatchEvent(new Event('input',{bubbles:true}));}
+s.value=v;s.setAttribute('value',v);}
 
 function syncSliders(d,useCur){
 const g=useCur?d.curGain:d.autoGain, gc=useCur?d.curGceil:d.autoGceil;
@@ -368,9 +396,6 @@ clearInterval(tick);
 syncSliders(d,false);
 $('cal-feedback').className=d.autoScore>=100?'cal-ok':'cal-fail';
 $('btn-tune').disabled=false;$('btn-cal').disabled=false;
-// Re-fetch after a moment in case the firmware updated values right after autoDone
-setTimeout(async()=>{try{const r2=await fetch('/status');const d2=await r2.json();
-if(d2.autoDone===1)syncSliders(d2,false);}catch(e){}},400);
 }else if(d.autoStage>0){
 syncSliders(d,true);
 }
@@ -390,7 +415,7 @@ const playing=st===2,paused=st===3,inGame=playing||paused,idle=st===0;
 $('game-bar').style.display=inGame?'block':'none';
 $('btn-pause').style.display=playing?'':'none';
 $('btn-resume').style.display=paused?'':'none';
-$('idle-controls').style.display=idle?'':'none';
+$('idle-controls').style.display=idle?'flex':'none';
 $('btn-start').style.display=(idle&&cal)?'':'none';
 $('btn-cal').style.display=idle?'':'none';
 $('btn-tune').style.display=idle?'':'none';}
@@ -402,8 +427,7 @@ lastState=d.state;
 const b=$('state-badge');
 if(d.state===0){b.textContent=t('train.idle');b.className='s-idle';
 $('score').style.display='none';
-$('info').textContent=d.calibrated?t('train.hint_calibrated')
-:t('train.hint_calibrate');}
+$('info').textContent=d.calibrated?t('train.hint_calibrated'):t('train.hint_calibrate');}
 else if(d.state===1){b.textContent=t('train.cal_badge');b.className='s-cal';}
 else if(d.state===2){b.textContent=t('train.playing');b.className='s-play';
 $('score').style.display='';}
@@ -420,7 +444,7 @@ if(d.calibrated){$('cal-info').style.display='';
 $('cal-info').textContent='Dice: '+d.calPx+'px, '+d.calW+'x'+d.calH+
 'px (contrast>='+d.calContrast+')';}
 if(d.roiW!==undefined){
-$('roi-info').textContent='ROI: '+d.roiW+'x'+d.roiH+' offset:'+d.roiX+','+d.roiY;
+$('roi-info').textContent=d.roiW+'×'+d.roiH+' @'+d.roiX+','+d.roiY;
 const roiX=160-d.roiW/2+(d.roiX||0), roiY=120-d.roiH/2+(d.roiY||0);
 const ovR=$('ov-roi');ovR.setAttribute('x',roiX);ovR.setAttribute('y',roiY);
 ovR.setAttribute('width',d.roiW);ovR.setAttribute('height',d.roiH);}
@@ -434,8 +458,7 @@ $('score').textContent=d.goals;
 if(d.state===2||d.state===3)$('info').textContent='fps:'+d.fps;
 if(d.state===1)log('Calibrating...','log-cal');
 if(d.calibrated&&lastState===1&&d.state===0){
-log('Calibrated: color=RGB565('+d.calR+','+d.calG+','+d.calB+
-') size='+d.calPx+'px bbox='+d.calW+'x'+d.calH+'px','log-cal');
+log('Calibrated: contrast>='+d.calContrast+' size='+d.calPx+'px bbox='+d.calW+'x'+d.calH+'px','log-cal');
 log('Limits: pixels '+Math.max(5,Math.floor(d.calPx/3))+'-'+(d.calPx*4)+
 ', bbox<='+Math.max(d.calW,d.calH)*2+'px','log-cal');}
 if(d.state===2&&d.matchPx>0){
