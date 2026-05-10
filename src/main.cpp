@@ -74,9 +74,15 @@ volatile int calBboxW = 0, calBboxH = 0;
 #define COOLDOWN_MS 10000
 #define STABLE_FRAMES_NEEDED 1
 
-// ROI offset and size for digital pan/resize (adjusted via /roi endpoint)
+// ROI offset and size for digital pan/resize (adjusted via /roi endpoint).
+// Default + auto-tune lock: 304×160 centered (matches a typical button-soccer
+// goal frame's wide-and-short aspect — fills the goal mouth without the side
+// posts). Auto-tune resets the ROI to this baseline so calibration is
+// reproducible across boards.
+#define AUTOTUNE_ROI_W 304
+#define AUTOTUNE_ROI_H 160
 volatile int roiOffsetX = 0, roiOffsetY = 0;
-volatile int roiW = DETECT_W * 8 / 10, roiH = DETECT_H * 8 / 10;
+volatile int roiW = AUTOTUNE_ROI_W, roiH = AUTOTUNE_ROI_H;
 
 // Shared detection state for web console
 volatile int lastMatchCount = 0, lastBboxW = 0, lastBboxH = 0;
@@ -765,6 +771,15 @@ static void sweepParam(CamSettings* best, long* bestScore, int* bestThresh,
 }
 
 void runAutotune() {
+    // Lock the ROI to the canonical 304×160 @ centre. This makes calibration
+    // reproducible across boards and frames — the operator can still nudge
+    // the ROI manually after auto-tune via the dpad/W·H buttons if needed.
+    roiW = AUTOTUNE_ROI_W;
+    roiH = AUTOTUNE_ROI_H;
+    roiOffsetX = 0;
+    roiOffsetY = 0;
+    Serial.printf("[tune] ROI reset to %d×%d @ 0,0\n", AUTOTUNE_ROI_W, AUTOTUNE_ROI_H);
+
     // Single-pass greedy sweep over the parameters that move the needle most
     // for separating a bright dadinho from a dark background. Other knobs
     // (sharp/gma/lenc/con) had marginal impact in testing — drop them for speed.
