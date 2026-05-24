@@ -69,3 +69,38 @@
 - [x] Dynamic content (goal log entries, state badges, countdown) uses translated strings
 - [x] Adding a new language requires only adding translations to each `I18N` object + a button
 - [x] Build succeeds with all i18n changes
+
+## F6: Physical LED Scoreboard (Placar)
+**Status:** Implemented (untested on hardware)
+**Description:** Standalone ESP32 board drives two pairs of MAX7219 8x8 LED matrices showing match score (0–99 per side). Synchronises with one or two camera boards over WiFi: camera pushes goals on detection, placar polls as fallback. Four physical buttons remain available for manual override.
+**Requirements:**
+- ESP32 DevKit V1 + 4× MAX7219 modules + 4 push buttons
+- Lives in the same PlatformIO project as gol-cam (env: `placar`)
+- Camera pushes `POST /goal {"side":"A|B"}` to the placar on goal detection
+- Placar polls `http://${CAMERA_IP}/status` every 500 ms as fallback
+- Physical buttons (UP/DW per side) act as manual override
+- Web UI on `:80` mirrors the buttons + shows connection status
+**Acceptance Criteria:**
+- [x] `pio run -e placar` builds successfully
+- [ ] Boots, connects to WiFi STA, shows 0×0 on the LEDs
+- [ ] Physical UP_A increments side A and reflects on display + web UI
+- [ ] Physical DW_A resets side A
+- [ ] Camera goal triggers placar increment within 1 s (push path)
+- [ ] Placar still increments correctly even if push fails (polling fallback)
+- [ ] Match dashboard shows "Placar: online (A x B)" when configured
+
+## F7: Placar Standalone Operation
+**Status:** Implemented (untested on hardware)
+**Description:** When the camera is unreachable (WiFi STA fails or no camera flashed), the placar must remain useful as a manual scoreboard with physical buttons.
+**Requirements:**
+- WiFi STA attempt times out after ~15 s
+- On STA failure, switch to AP mode `PLACAR_WIFI` / `12345678` at 192.168.4.1
+- All four buttons keep working in AP mode
+- Web UI accessible from any device joining the AP
+- Connection state visible in the UI ("STA 192.168.x.x" vs "AP PLACAR_WIFI")
+**Acceptance Criteria:**
+- [x] Implementation complete (`startWiFi()` in `main_placar.cpp`)
+- [ ] STA timeout falls back to AP without rebooting
+- [ ] Buttons increment/reset in AP mode
+- [ ] Web UI loads from `http://192.168.4.1` when in AP mode
+- [ ] Returning STA on next reboot recovers normal mode
