@@ -1,95 +1,95 @@
 # gol-cam
 
-A complete electronic system for **futebol de botao** (button soccer): a camera that detects goals by computer vision, an LED scoreboard that displays the score, and a 3D-printed frame that puts it all together. Built for the **Dadinho** variant — the small 4-6 mm dice used as the ball.
+Sistema eletrônico completo para **futebol de botão**: uma câmera que detecta gols por visão computacional, um placar de LED que mostra a contagem e um conjunto de peças impressas em 3D que une tudo. Construído para a variante **Dadinho** — o pequeno dado de 4-6 mm usado como bola.
 
-## System overview
+## Visão geral do sistema
 
-Three coordinated components in one repository:
+Três componentes coordenados em um único repositório:
 
-| Component | Hardware | Role |
+| Componente | Hardware | Função |
 |---|---|---|
-| **Camera** | DFRobot DFR1154 (ESP32-S3 + OV3660) | Detects goals via edge-based vision; serves the web dashboard and MJPEG stream |
-| **Placar** | ESP32 DevKit V1 + 4× MAX7219 8×8 LED matrices + 4 buttons | Shows the score on physical LED digits; receives goal pushes from the camera and supports manual override |
-| **Hardware** | 3D-printed enclosures (`hardware/`) | Trave (goal frame), camera box, scoreboard case, accessories |
+| **Câmera** | DFRobot DFR1154 (ESP32-S3 + OV3660) | Detecta gols por visão baseada em bordas; serve o painel web e o stream MJPEG |
+| **Placar** | ESP32 DevKit V1 + 4× matrizes de LED MAX7219 8×8 + 4 botões | Exibe o placar em dígitos de LED físicos; recebe eventos de gol da câmera e suporta override manual |
+| **Hardware** | Caixas impressas em 3D (`hardware/`) | Trave, caixa da câmera, gabinete do placar, acessórios |
 
-**Network topology:**
+**Topologia de rede:**
 
 ```
                   ┌──────────────┐
                   │  Smartphone  │
                   │  / tablet    │
                   └───────┬──────┘
-                          │ HTTP dashboard (browser polls)
+                          │ Painel HTTP (navegador faz polling)
                           │
        ┌──────────────────┼──────────────────┐
        │                  │                  │
        ▼                  ▼                  ▼
 ┌────────────┐     ┌────────────┐     ┌────────────┐
-│ Camera A   │     │ Camera B   │     │ Placar     │
+│ Câmera A   │     │ Câmera B   │     │ Placar     │
 │ DFR1154    │     │ DFR1154    │     │ ESP32 +    │
 │ side=A     │     │ side=B     │     │ MAX7219    │
 └──────┬─────┘     └──────┬─────┘     └─────▲──────┘
        │                  │                 │
        └──────────────────┴─────────────────┘
-              POST /goal {"side":"A|B"}   on detection
-              (placar polling fallback @500 ms via /status)
+              POST /goal {"side":"A|B"}   na detecção
+              (fallback de polling do placar @500 ms via /status)
 ```
 
-For a one-camera setup, omit Camera B and the scoreboard's `PEER_IP`. The placar can also operate **standalone** — if the WiFi connection fails it falls back to an AP `PLACAR_WIFI` (192.168.4.1), and the 4 physical buttons remain functional.
+Para uma configuração com apenas uma câmera, omita a Câmera B e o `PEER_IP` do placar. O placar também pode operar de forma **autônoma** — se a conexão WiFi falhar, ele volta para o modo AP `PLACAR_WIFI` (192.168.4.1), e os 4 botões físicos continuam funcionando.
 
-## How detection works
+## Como funciona a detecção
 
-A DFR1154 (ESP32-S3 + OV3660 wide-angle camera) watches the goal area. You calibrate by placing the dadinho in view, and the system learns its edge signature. During play, it detects the cube entering the goal, captures a snapshot, plays a celebration sound through the I2S speaker, pushes a goal event to the placar, and keeps score — all over WiFi.
+Um DFR1154 (ESP32-S3 + câmera grande-angular OV3660) observa a área do gol. Você calibra colocando o dadinho no campo de visão, e o sistema aprende a assinatura de bordas dele. Durante a partida, ele detecta o cubo entrando no gol, captura uma foto, toca um som de comemoração pelo alto-falante I2S, envia o evento de gol para o placar e mantém a contagem — tudo via WiFi.
 
-Features:
-- Live MJPEG camera stream
-- One-click calibration with visual feedback
-- Automatic goal detection with 10-second cooldown
-- Goal photo log with timestamps
-- VAR (Video Assistant Referee) review system
-- Game controls: pause, resume, reset, end game
-- Physical LED scoreboard with manual override buttons
-- Standalone scoreboard operation when camera is offline
+Recursos:
+- Stream MJPEG ao vivo da câmera
+- Calibração em um clique com feedback visual
+- Detecção automática de gols com cooldown de 10 segundos
+- Registro de fotos dos gols com horário
+- Sistema de revisão tipo VAR (árbitro de vídeo)
+- Controles de jogo: pausar, retomar, reiniciar, encerrar partida
+- Placar físico de LED com botões de override manual
+- Operação autônoma do placar quando a câmera está offline
 
-## Futebol de Botao and the Dadinho in Rio de Janeiro
+## Futebol de Botão e o Dadinho no Rio de Janeiro
 
-**Futebol de botao** (button football) is a tabletop sport born in Brazil in the 1930s, where players flick round discs to move a smaller piece — the ball — across a miniature pitch. The game emerged from the creativity of Brazilian kids who fashioned buttons, bottle caps, and coins into teams, playing on dining tables and wooden boards across the country.
+O **futebol de botão** é um esporte de mesa nascido no Brasil na década de 1930, no qual jogadores impulsionam discos circulares com o dedo para movimentar uma peça menor — a bola — por um campo em miniatura. O jogo surgiu da criatividade da garotada brasileira, que transformava botões, tampinhas de garrafa e moedas em times, jogando em mesas de jantar e tabuleiros de madeira pelo país.
 
-### Origins
+### Origens
 
-The sport's roots trace to the 1930s and 1940s, when Geraldo Decourt of Sao Paulo published the first formal rules in 1930. What started as a children's pastime quickly grew into an organized competitive activity. By the mid-20th century, clubs and federations had formed, and regional rule variations flourished.
+As raízes do esporte remontam às décadas de 1930 e 1940, quando Geraldo Decourt, de São Paulo, publicou as primeiras regras formais em 1930. O que começou como passatempo infantil rapidamente cresceu para uma atividade competitiva organizada. Em meados do século XX, clubes e federações já haviam se formado, e variações regionais de regras floresceram.
 
-### Rio de Janeiro and the Regra Carioca
+### Rio de Janeiro e a Regra Carioca
 
-Rio de Janeiro became one of the sport's most important centers, developing its own distinctive style known as the **Regra Carioca** (Carioca Rules) or **3 Toques** (3 Touches). Under these rules, a player gets up to three flicks per turn to advance the ball, creating a faster, more tactical game compared to other regional variants.
+O Rio de Janeiro se tornou um dos centros mais importantes do esporte, desenvolvendo seu próprio estilo distinto conhecido como **Regra Carioca** ou **3 Toques**. Por essas regras, o jogador tem até três toques por jogada para avançar a bola, criando um jogo mais rápido e mais tático em comparação com outras variantes regionais.
 
-### The Dadinho
+### O Dadinho
 
-The **Dadinho** (little dice) variant represents a distinct branch of button football. Instead of traditional round discs, players use small dice — typically 6mm yellow cubes — as the playing pieces. The name comes from "dado" (dice) with the diminutive "-inho" suffix.
+A variante **Dadinho** representa um ramo distinto do futebol de botão. Em vez dos tradicionais discos redondos, os jogadores usam pequenos dados — tipicamente cubos amarelos de 6 mm — como peças. O nome vem de "dado" com o sufixo diminutivo "-inho".
 
-Dadinho was officially recognized by the Confederacao Brasileira de Futebol de Mesa (CBFM) in 2010, giving it the same institutional standing as the traditional disc-based modalities. The variant has its own dedicated competitive circuit, with the Brazilian Dadinho Championship reaching its 16th edition in 2025.
+O Dadinho foi oficialmente reconhecido pela Confederação Brasileira de Futebol de Mesa (CBFM) em 2010, dando-lhe a mesma posição institucional das modalidades tradicionais baseadas em disco. A variante tem seu próprio circuito competitivo dedicado, com o Campeonato Brasileiro de Dadinho chegando à 16ª edição em 2025.
 
 ## Hardware
 
-### Bill of Materials (BOM)
+### Lista de materiais (BOM)
 
-**Camera board (×1 single or ×2 match mode):**
+**Placa da câmera (×1 modo single ou ×2 modo match):**
 - 1× DFRobot DFR1154 (ESP32-S3 + OV3660, 16 MB flash, 8 MB PSRAM)
-- 1× MAX98357 I2S amplifier + small speaker (already included on the DFR1154 carrier)
-- USB-C cable for power and programming
+- 1× amplificador I2S MAX98357 + alto-falante pequeno (já inclusos na placa DFR1154)
+- Cabo USB-C para alimentação e gravação
 
-**Placar board (×1, optional):**
-- 1× ESP32 DevKit V1 (any ESP32 with ≥8 free GPIOs)
-- 4× MAX7219 8×8 LED matrix modules (FC-16 chain), 2 per side
-- 4× push buttons (momentary, normally open)
-- Jumpers and 5 V supply (USB to the DevKit works)
+**Placa do placar (×1, opcional):**
+- 1× ESP32 DevKit V1 (qualquer ESP32 com ≥8 GPIOs livres)
+- 4× módulos de matriz de LED MAX7219 8×8 (cadeia FC-16), 2 por lado
+- 4× push buttons (momentâneos, normalmente abertos)
+- Jumpers e fonte de 5 V (USB no DevKit funciona)
 
-**Mechanical:**
-- 3D-printed parts from `hardware/` (PLA, see `hardware/README.md` for slicer settings)
+**Mecânica:**
+- Peças impressas em 3D a partir de `hardware/` (PLA, veja `hardware/README.md` para configurações do slicer)
 
-### Placar wiring (ESP32 DevKit V1)
+### Fiação do placar (ESP32 DevKit V1)
 
-**Display A** (left score, 2 chained modules, DOUT → DIN):
+**Display A** (placar da esquerda, 2 módulos em cadeia, DOUT → DIN):
 
 | MAX7219 | GPIO | Macro (`include/pins_placar.h`) |
 |---|---|---|
@@ -99,7 +99,7 @@ Dadinho was officially recognized by the Confederacao Brasileira de Futebol de M
 | VCC | 5V (VIN) | — |
 | GND | GND | — |
 
-**Display B** (right score, 2 chained modules):
+**Display B** (placar da direita, 2 módulos em cadeia):
 
 | MAX7219 | GPIO | Macro |
 |---|---|---|
@@ -107,40 +107,40 @@ Dadinho was officially recognized by the Confederacao Brasileira de Futebol de M
 | CLK | 21 | `PLACAR_CLK_B` |
 | CS  | 22 | `PLACAR_CS_B`  |
 
-**Buttons** (each from GPIO to GND, `INPUT_PULLUP` — no external resistors):
+**Botões** (cada um do GPIO ao GND, `INPUT_PULLUP` — sem resistores externos):
 
-| Button | GPIO | Macro | Action |
+| Botão | GPIO | Macro | Ação |
 |---|---|---|---|
-| UP A | 32 | `PLACAR_BTN_UP_A` | Increment side A |
-| DW A | 33 | `PLACAR_BTN_DW_A` | Reset side A |
-| UP B | 25 | `PLACAR_BTN_UP_B` | Increment side B |
-| DW B | 26 | `PLACAR_BTN_DW_B` | Reset side B |
+| UP A | 32 | `PLACAR_BTN_UP_A` | Incrementa lado A |
+| DW A | 33 | `PLACAR_BTN_DW_A` | Zera lado A |
+| UP B | 25 | `PLACAR_BTN_UP_B` | Incrementa lado B |
+| DW B | 26 | `PLACAR_BTN_DW_B` | Zera lado B |
 
-### Camera pinout
+### Pinagem da câmera
 
-See `include/pins.h` — preconfigured for the DFR1154 carrier. No wiring needed.
+Veja `include/pins.h` — pré-configurada para a placa DFR1154. Não precisa fazer fiação.
 
-### 3D-printed parts
+### Peças impressas em 3D
 
-See `hardware/README.md` for the parts catalog (trave V4, camera box V5.2, placar case, speaker mount, cooler grille) with recommendations for slicing.
+Veja `hardware/README.md` para o catálogo de peças (trave V4, caixa da câmera V5.2, gabinete do placar, suporte de alto-falante, grade de cooler) com recomendações de fatiamento.
 
-## Getting Started
+## Primeiros passos
 
-### Prerequisites
+### Pré-requisitos
 
 - [Git](https://git-scm.com/downloads)
-- [Python 3](https://www.python.org/downloads/) (check "Add to PATH" on Windows installer)
-- USB-C cable for the DFR1154; USB cable for the ESP32 DevKit
-- **Windows only:** [CP210x USB driver](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) (may be needed for serial communication)
+- [Python 3](https://www.python.org/downloads/) (marque "Add to PATH" no instalador do Windows)
+- Cabo USB-C para o DFR1154; cabo USB para o ESP32 DevKit
+- **Apenas Windows:** [driver USB CP210x](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) (pode ser necessário para comunicação serial)
 
-### Step 1 — Clone the repo
+### Passo 1 — Clonar o repositório
 
 ```bash
 git clone https://github.com/mpaiva/gol-cam.git
 cd gol-cam
 ```
 
-### Step 2 — Create a Python virtual environment
+### Passo 2 — Criar um ambiente virtual Python
 
 **Mac (Terminal):**
 ```bash
@@ -156,103 +156,103 @@ python -m venv .venv
 pip install platformio
 ```
 
-> If PowerShell blocks the script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` first.
+> Se o PowerShell bloquear o script, rode `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` antes.
 
-### Step 3 — Configure `.env`
+### Passo 3 — Configurar `.env`
 
-Create `.env` in the project root (git-ignored):
+Crie um arquivo `.env` na raiz do projeto (ignorado pelo git):
 
 ```ini
-# Required — same WiFi for camera and placar
-WIFI_SSID=your-network-name
-WIFI_PASSWORD=your-password
+# Obrigatório — mesma WiFi para câmera e placar
+WIFI_SSID=nome-da-sua-rede
+WIFI_PASSWORD=sua-senha
 
-# Optional — static IPs help in match mode
+# Opcional — IPs estáticos ajudam no modo match
 WIFI_STATIC_IP=192.168.0.100
 WIFI_GATEWAY=192.168.0.1
 WIFI_SUBNET=255.255.255.0
 
-# Optional — role tags for match mode
-BOARD_ROLE=goal_a            # or goal_b, single, scoreboard
-PEER_IP=192.168.0.101        # IP of the other camera (match mode)
-SCOREBOARD_IP=192.168.0.110  # IP of the placar (camera pushes goals here)
-CAMERA_IP=192.168.0.100      # IP of the camera (placar polls this as fallback)
+# Opcional — tags de papel para o modo match
+BOARD_ROLE=goal_a            # ou goal_b, single, scoreboard
+PEER_IP=192.168.0.101        # IP da outra câmera (modo match)
+SCOREBOARD_IP=192.168.0.110  # IP do placar (câmera envia gols para cá)
+CAMERA_IP=192.168.0.100      # IP da câmera (placar faz polling como fallback)
 ```
 
-`load_env.py` reads these and injects them as `-D` build defines, so they are baked into the firmware at compile time. Different boards therefore need different `.env` values — flash one, change `.env`, flash the next.
+`load_env.py` lê esses valores e injeta como `-D` defines de build, então são compilados no firmware. Placas diferentes precisam de valores `.env` diferentes — grave uma, altere o `.env`, grave a próxima.
 
-### Step 4 — Build & flash
+### Passo 4 — Compilar e gravar
 
-Two PlatformIO environments live in the same project:
+Dois ambientes PlatformIO convivem no mesmo projeto:
 
 ```bash
-# Camera (default — same as `pio run`)
+# Câmera (padrão — igual a `pio run`)
 pio run -e dfr1154 -t upload
 
 # Placar
 pio run -e placar -t upload
 ```
 
-The default environment is `dfr1154`, so plain `pio run` builds the camera. Flash each board one at a time, adjusting `.env` between flashes if you want different `BOARD_ROLE` or static IP values.
+O ambiente padrão é `dfr1154`, então um `pio run` sem parâmetros compila a câmera. Grave uma placa por vez, ajustando o `.env` entre gravações se quiser valores diferentes de `BOARD_ROLE` ou IP estático.
 
-### Step 5 — Find the IP and open the dashboard
+### Passo 5 — Descobrir o IP e abrir o painel
 
 ```bash
-pio device monitor   # baud 115200, look for "Dashboard: http://..." on the camera
+pio device monitor   # baud 115200, procure "Dashboard: http://..." na câmera
 ```
 
-Open the camera's IP in a browser. You'll see the mode selector:
-- **Training** — single camera, calibration and practice
-- **Match** — two cameras + optional placar; configure IPs on first load (saved to `localStorage`)
+Abra o IP da câmera no navegador. Você verá o seletor de modo:
+- **Training (Treino)** — uma câmera, calibração e prática
+- **Match (Partida)** — duas câmeras + placar opcional; configure os IPs na primeira carga (salvos no `localStorage`)
 
-The placar serves its own simple UI at its IP (manual increment / reset, plus current connection status).
+O placar serve sua própria interface simples no IP dele (incremento/reset manual, mais o status atual da conexão).
 
-## Operation
+## Operação
 
-### Standard match flow
+### Fluxo padrão de partida
 
-1. **Calibrate each camera** — place the dadinho in front of the goal, click "Calibrate"
-2. **Start the game** — match dashboard shows live feeds and unified scoreboard
-3. **Play** — the camera detects goals, plays a celebration sound, pushes the event to the placar, increments the LED scoreboard
-4. **VAR review** — click any goal entry to confirm or annul (annulled goals deduct from the right side)
-5. **Pause / resume / reset / end** — controls reach all boards simultaneously
+1. **Calibre cada câmera** — coloque o dadinho na frente do gol, clique em "Calibrate"
+2. **Inicie o jogo** — o painel de partida mostra os feeds ao vivo e o placar unificado
+3. **Jogue** — a câmera detecta gols, toca som de comemoração, envia o evento para o placar e incrementa o placar de LED
+4. **Revisão VAR** — clique em qualquer entrada de gol para confirmar ou anular (gols anulados subtraem do lado certo)
+5. **Pausar / retomar / reiniciar / encerrar** — controles atingem todas as placas simultaneamente
 
-### Placar fallback (no camera or camera offline)
+### Fallback do placar (sem câmera ou câmera offline)
 
-If the camera is unreachable, the placar still works:
-- WiFi STA failed → AP mode `PLACAR_WIFI` / `12345678`, open `http://192.168.4.1`
-- Physical buttons always work (UP / RESET per side)
-- Manual web UI mirrors the buttons
+Se a câmera estiver inacessível, o placar continua funcionando:
+- WiFi STA falhou → modo AP `PLACAR_WIFI` / `12345678`, abra `http://192.168.4.1`
+- Botões físicos sempre funcionam (UP / RESET por lado)
+- A interface web manual espelha os botões
 
-## Repository layout
+## Estrutura do repositório
 
 ```
 gol-cam/
-├── platformio.ini              # Dual environments: dfr1154 + placar
-├── partitions.csv              # 16 MB flash layout for the camera
-├── load_env.py                 # .env → -D build defines
-├── .env                        # WiFi + role/IP overrides (git-ignored)
+├── platformio.ini              # Dois ambientes: dfr1154 + placar
+├── partitions.csv              # Layout de 16 MB de flash para a câmera
+├── load_env.py                 # .env → -D defines de build
+├── .env                        # WiFi + overrides de papel/IP (ignorado pelo git)
 ├── include/
-│   ├── camera.h, pins.h        # Camera (DFR1154)
+│   ├── camera.h, pins.h        # Câmera (DFR1154)
 │   ├── frame_store.h, goal_detector.h, gol_sound*.h
-│   ├── pins_placar.h           # Placar GPIOs
-│   ├── placar_display.h        # MAX7219 driver
-│   ├── placar_buttons.h        # debounced button reader
-│   └── placar_web.h            # placar HTTP server contract
+│   ├── pins_placar.h           # GPIOs do placar
+│   ├── placar_display.h        # Driver MAX7219
+│   ├── placar_buttons.h        # Leitor de botões com debounce
+│   └── placar_web.h            # Contrato do servidor HTTP do placar
 ├── src/
-│   ├── main.cpp                # Camera entry + detection loop + goal push
-│   ├── web_stream.cpp          # Camera HTTP server (esp_http_server)
+│   ├── main.cpp                # Entry da câmera + loop de detecção + push de gol
+│   ├── web_stream.cpp          # Servidor HTTP da câmera (esp_http_server)
 │   ├── mode_select.h, training_dashboard.h, match_dashboard.h
-│   ├── main_placar.cpp         # Placar entry + WiFi/AP + camera polling
-│   ├── placar_display.cpp      # MAX7219 rendering
-│   ├── placar_buttons.cpp      # button debounce
-│   └── placar_web.cpp          # placar WebServer + /goal /sync /status
-├── hardware/                   # 3D-printed enclosures
-├── .about/                     # Value proposition, feature requests
-├── .plans/                     # Implementation plans, session notes
-└── .reports/                   # Research, UX audit, screenshots
+│   ├── main_placar.cpp         # Entry do placar + WiFi/AP + polling da câmera
+│   ├── placar_display.cpp      # Renderização MAX7219
+│   ├── placar_buttons.cpp      # Debounce dos botões
+│   └── placar_web.cpp          # WebServer do placar + /goal /sync /status
+├── hardware/                   # Caixas impressas em 3D
+├── .about/                     # Proposta de valor, feature requests
+├── .plans/                     # Planos de implementação, notas de sessão
+└── .reports/                   # Pesquisa, auditoria de UX, screenshots
 ```
 
-## License
+## Licença
 
 MIT
