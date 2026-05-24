@@ -101,6 +101,29 @@ static void handleSync() {
     handleStatus();
 }
 
+// POST /goal {"side":"A"} — increment one side (push from camera).
+// Idempotency is not enforced here; cameras enforce a 10 s cooldown.
+static void handleGoal() {
+    String body = server.arg("plain");
+    String side;
+    int i = body.indexOf("\"side\":\"");
+    if (i >= 0) {
+        i += 8;
+        int end = body.indexOf('"', i);
+        if (end > i) side = body.substring(i, end);
+    }
+    if (side == "A" || side == "a") {
+        placarIncrementA();
+    } else if (side == "B" || side == "b") {
+        placarIncrementB();
+    } else {
+        server.send(400, "application/json", "{\"error\":\"side must be A or B\"}");
+        return;
+    }
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    handleStatus();
+}
+
 static void handleOptions() {
     server.sendHeader("Access-Control-Allow-Origin", "*");
     server.sendHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
@@ -118,6 +141,8 @@ void placarWebBegin() {
     server.on("/status", HTTP_GET, handleStatus);
     server.on("/sync", HTTP_POST, handleSync);
     server.on("/sync", HTTP_OPTIONS, handleOptions);
+    server.on("/goal", HTTP_POST, handleGoal);
+    server.on("/goal", HTTP_OPTIONS, handleOptions);
     server.begin();
     Serial.println("placar: web server listening on :80");
 }

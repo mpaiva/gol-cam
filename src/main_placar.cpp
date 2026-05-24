@@ -124,7 +124,7 @@ static void pollCamera() {
     if (code == 200) {
         String body = http.getString();
         int goals = 0;
-        if (extractIntField(body, "goalCount", &goals)) {
+        if (extractIntField(body, "goals", &goals)) {
             if (lastCameraGoalCount < 0) {
                 lastCameraGoalCount = goals;     // baseline; no increment on first poll
             } else if (goals > lastCameraGoalCount) {

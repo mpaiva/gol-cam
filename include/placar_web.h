@@ -10,7 +10,8 @@
 //   GET  /az /bz   reset side (redirects to /)
 //   GET  /reset    reset both (redirects to /)
 //   GET  /status   JSON {"role":"scoreboard","a":N,"b":M}
-//   POST /sync     accept {"a":N,"b":M} from the camera (idempotent)
+//   POST /sync     accept {"a":N,"b":M} — set absolute scores (idempotent)
+//   POST /goal     accept {"side":"A"|"B"} — increment one side (push from camera)
 // =============================================================
 
 void placarWebBegin();

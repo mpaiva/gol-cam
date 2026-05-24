@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <HTTPClient.h>
 #include "esp_camera.h"
 #include "img_converters.h"
 #include "driver/i2s.h"
@@ -176,6 +177,57 @@ void initSpeaker() {
     Serial.println("[audio] Speaker task ready");
 }
 
+// --- Goal push: notify the scoreboard board over WiFi (best effort) ---
+// Runs on its own task so the detection loop never blocks on HTTP.
+// SCOREBOARD_IP is injected from .env via load_env.py; absent → no push.
+TaskHandle_t goalPushTaskHandle = NULL;
+
+void goalPushTask(void* param) {
+#ifdef SCOREBOARD_IP
+    const char* scoreboardIp = SCOREBOARD_IP;
+    const char* mySide =
+    #ifdef BOARD_ROLE
+        (strstr(BOARD_ROLE, "_b") || strstr(BOARD_ROLE, "_B")) ? "B" : "A";
+    #else
+        "A";
+    #endif
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        if (WiFi.status() != WL_CONNECTED || !scoreboardIp[0]) continue;
+        String url = String("http://") + scoreboardIp + "/goal";
+        String body = String("{\"side\":\"") + mySide + "\"}";
+        HTTPClient http;
+        http.setTimeout(1000);
+        if (http.begin(url)) {
+            http.addHeader("Content-Type", "application/json");
+            int code = http.POST(body);
+            Serial.printf("[scoreboard] POST %s side=%s → %d\n", url.c_str(), mySide, code);
+            http.end();
+        }
+    }
+#else
+    (void)param;
+    vTaskDelete(NULL);
+#endif
+}
+
+void pushGoalToScoreboard() {
+    if (goalPushTaskHandle) xTaskNotifyGive(goalPushTaskHandle);
+}
+
+void initScoreboardPush() {
+#ifdef SCOREBOARD_IP
+    if (SCOREBOARD_IP[0] != '\0') {
+        xTaskCreatePinnedToCore(goalPushTask, "goalPush", 4096, NULL, 1, &goalPushTaskHandle, 1);
+        Serial.printf("[scoreboard] push target = http://%s/goal\n", SCOREBOARD_IP);
+    } else {
+        Serial.println("[scoreboard] SCOREBOARD_IP empty; goal push disabled");
+    }
+#else
+    Serial.println("[scoreboard] SCOREBOARD_IP not set; goal push disabled");
+#endif
+}
+
 // Called from HTTP handler to trigger calibration
 void requestCalibration() {
     gameState = STATE_CALIBRATING;
@@ -276,6 +328,9 @@ void setup() {
 
     // Initialize I2S speaker
     initSpeaker();
+
+    // Initialize scoreboard push (best-effort goal notification to placar board)
+    initScoreboardPush();
 
     // Static IP configuration (optional — set in .env)
 #ifdef WIFI_STATIC_IP
@@ -689,6 +744,9 @@ void loop() {
 
         // Play celebration sound (non-blocking, runs on separate core)
         playGoalSound();
+
+        // Push goal to physical scoreboard (best effort; placar polling is fallback)
+        pushGoalToScoreboard();
 
         // Flash LED
         digitalWrite(LED_PIN, HIGH);
