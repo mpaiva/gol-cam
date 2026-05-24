@@ -102,7 +102,7 @@ Resultado: pasta temporária `_import_placar/` contendo o sketch `.ino`, README,
 - [ ] Mover `_import_placar/Pinos ESP32.jpeg`, `Ligacao dos Pinos.png` → `.reports/screenshots/placar-wiring-*.{jpeg,png}`
 - [ ] Mover `_import_placar/New Scene.3mf` → `hardware/placar/` (se ainda não copiado na Fase 1)
 - [ ] Mover `_import_placar/README.md` → preservar conteúdo no novo `README.md` consolidado (Fase 7)
-- [ ] Mover `_import_placar/Placar_Eletronico_Wi-Fi/Placar_Eletronico_Wi-Fi.ino` → `src/_legacy_placar.ino` (referência durante a portabilidade — removido ao fim da Fase 5)
+- [ ] Mover `_import_placar/Placar_Eletronico_Wi-Fi/Placar_Eletronico_Wi-Fi.ino` → `legacy/Placar_Eletronico_Wi-Fi.ino` (fora de `src/` para não quebrar build; referência durante a portabilidade — removido ao fim da Fase 5)
 - [ ] Apagar pasta `_import_placar/`
 - [ ] Commit: `consolidation: reorganize imported placar files into hardware/, reports/, src/`
 
