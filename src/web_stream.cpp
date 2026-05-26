@@ -38,7 +38,7 @@ extern volatile uint32_t goalSnapshotSeq;
 extern volatile uint32_t lastGoalTimeMs;
 
 // Actions (defined in main.cpp)
-extern void requestCalibration();
+extern void requestCalibration(bool fast);
 extern void requestAutotune();
 extern volatile int contrastThreshold;
 extern volatile int speakerVolume;
@@ -51,6 +51,9 @@ extern volatile int autotuneBestCon, autotuneBestBri, autotuneBestSharp, autotun
 extern volatile int curCamGain, curCamGceil, curCamAec, curCamGma, curCamLenc;
 extern volatile int curCamCon, curCamBri, curCamSharp;
 extern volatile int diceBboxX, diceBboxY, diceBboxW, diceBboxH;
+extern volatile bool fastMode;
+extern volatile int detectW, detectH;
+extern volatile pixformat_t currentPixFmt;
 extern void requestStart();
 extern void requestPause();
 extern void requestResume();
@@ -128,6 +131,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"curGain\":%d,\"curGceil\":%d,\"curAec\":%d,\"curGma\":%d,\"curLenc\":%d,"
         "\"curCon\":%d,\"curBri\":%d,\"curSharp\":%d,"
         "\"scoreboardIp\":\"%s\","
+        "\"fastMode\":%s,\"detectW\":%d,\"detectH\":%d,\"pixFmt\":\"%s\","
         "\"heap\":%u,\"heapMin\":%u,\"psram\":%u,\"psramMin\":%u,\"uptime\":%u}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
@@ -149,6 +153,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
         (int)curCamGain, (int)curCamGceil, (int)curCamAec, (int)curCamGma, (int)curCamLenc,
         (int)curCamCon, (int)curCamBri, (int)curCamSharp,
         scoreboardIp,
+        fastMode ? "true" : "false", (int)detectW, (int)detectH,
+        currentPixFmt == PIXFORMAT_RGB565 ? "RGB565" : "GRAY",
         (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
         (unsigned)ESP.getFreePsram(), (unsigned)ESP.getMinFreePsram(),
         (unsigned)(millis() / 1000));
@@ -186,7 +192,17 @@ static esp_err_t goal_snapshot_handler(httpd_req_t *req) {
 }
 
 static esp_err_t calibrate_handler(httpd_req_t *req) {
-    requestCalibration();
+    // Optional ?fast=1 — reconfigures the camera to QQVGA RGB565 before
+    // calibrating so detection runs at maximum FPS. Default is QVGA grayscale.
+    bool fast = false;
+    char query[32];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char v[4];
+        if (httpd_query_key_value(query, "fast", v, sizeof(v)) == ESP_OK) {
+            fast = (v[0] == '1' || v[0] == 't' || v[0] == 'T');
+        }
+    }
+    requestCalibration(fast);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     return httpd_resp_send(req, "{\"ok\":true}", 11);

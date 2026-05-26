@@ -169,6 +169,9 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <div class='actions' id='idle-controls'>
 <button class='btn btn-tune' id='btn-tune' onclick='autotune()' data-i18n='train.autotune'>&#9881; Auto-Tune</button>
 <button class='btn btn-cal' id='btn-cal' onclick='calibrate()' data-i18n='train.calibrate'>&#127919; Calibrate</button>
+<label style='display:inline-flex;align-items:center;gap:6px;font-size:0.9em;color:var(--muted)'>
+<input type='checkbox' id='cal-fast' onchange='updateFastHint()'> <span data-i18n='train.fast'>Fast (RGB)</span>
+</label>
 <button class='btn btn-start' id='btn-start' onclick='startGame()' style='display:none' data-i18n='train.start'>&#9654; Start</button>
 </div>
 <div id='game-bar'>
@@ -248,6 +251,8 @@ en:{
 'train.paused':'PAUSED',
 'train.hint_calibrate':'Place the dadinho in view, then press Calibrate',
 'train.hint_calibrated':'Calibrated! Press Start',
+'train.hint_fast':'Fast mode: QQVGA RGB565 — ~2x FPS but lower detail. Calibrate to apply.',
+'train.fast':'Fast (RGB)',
 'train.detecting_in':'Detecting in %ds...',
 'train.disconnected':'disconnected',
 'train.gol_num':'GOL #%d',
@@ -281,6 +286,8 @@ pt:{
 'train.paused':'PAUSADO',
 'train.hint_calibrate':'Coloque o dadinho na câmera e pressione Calibrar',
 'train.hint_calibrated':'Calibrado! Pressione Iniciar',
+'train.hint_fast':'Modo rápido: QQVGA RGB565 — ~2x FPS mas menos detalhe. Calibre para aplicar.',
+'train.fast':'Rápido (RGB)',
 'train.detecting_in':'Detectando em %ds...',
 'train.disconnected':'desconectado',
 'train.gol_num':'GOL #%d',
@@ -373,13 +380,18 @@ if(reset)await fetch('/roi?x=0&y=0');
 else await fetch('/roi?dx='+dx+'&dy='+dy);}
 async function resizeRoi(dw,dh){await fetch('/roi?dw='+dw+'&dh='+dh);}
 
+function updateFastHint(){
+const f=$('cal-fast')&&$('cal-fast').checked;
+const tip=$('info');if(tip)tip.textContent=f?t('train.hint_fast'):(window.lastCalibrated?t('train.hint_calibrated'):t('train.hint_calibrate'));}
+
 async function calibrate(){
 $('btn-cal').textContent=t('train.calibrating');
 $('btn-cal').disabled=true;
 $('cal-feedback').style.display='block';
 $('cal-feedback').textContent=t('train.analyzing');
 $('cal-feedback').className='';
-await fetch('/calibrate');
+const fast=$('cal-fast')&&$('cal-fast').checked?'?fast=1':'';
+await fetch('/calibrate'+fast);
 setTimeout(async()=>{
 try{const r=await fetch('/status');const d=await r.json();
 if(d.calMsg){
@@ -455,6 +467,16 @@ $('btn-tune').style.display=idle?'':'none';}
 
 setInterval(async()=>{
 try{const r=await fetch('/status');const d=await r.json();
+// SVG overlay tracks the live detection resolution so bbox coords map correctly
+// even after /calibrate?fast=1 drops the camera to QQVGA.
+if(d.detectW&&d.detectH){
+const ov=$('cam-overlay');
+const want='0 0 '+d.detectW+' '+d.detectH;
+if(ov&&ov.getAttribute('viewBox')!==want)ov.setAttribute('viewBox',want);
+window.lastDetectW=d.detectW;window.lastDetectH=d.detectH;}
+window.lastCalibrated=d.calibrated;
+if(d.fastMode!==undefined){
+const cb=$('cal-fast');if(cb&&cb.checked!==d.fastMode)cb.checked=d.fastMode;}
 if(d.state!==lastState){
 lastState=d.state;
 const b=$('state-badge');
@@ -479,7 +501,8 @@ $('cal-info').textContent='Dice: '+d.calPx+'px, '+d.calW+'x'+d.calH+
 if(d.scoreboardIp&&d.scoreboardIp!==scoreboardIp){scoreboardIp=d.scoreboardIp;pollScoreboard();}
 if(d.roiW!==undefined){
 $('roi-info').textContent=d.roiW+'×'+d.roiH+' @'+d.roiX+','+d.roiY;
-const roiX=160-d.roiW/2+(d.roiX||0), roiY=120-d.roiH/2+(d.roiY||0);
+const cx=(d.detectW||320)/2, cy=(d.detectH||240)/2;
+const roiX=cx-d.roiW/2+(d.roiX||0), roiY=cy-d.roiH/2+(d.roiY||0);
 const ovR=$('ov-roi');ovR.setAttribute('x',roiX);ovR.setAttribute('y',roiY);
 ovR.setAttribute('width',d.roiW);ovR.setAttribute('height',d.roiH);}
 const ovD=$('ov-dice');
