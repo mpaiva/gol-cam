@@ -448,14 +448,9 @@ async function pollBoard(side){
     if(ri&&d.roiW!==undefined)ri.textContent=d.roiW+'×'+d.roiH+' @'+d.roiX+','+d.roiY;
     if(d.scoreboardIp&&d.scoreboardIp!==scoreboardIp){scoreboardIp=d.scoreboardIp;pollScoreboard();}
     var ov=$(('ov-'+side));
-    if(ov&&d.detectW&&d.detectH){
-      var vbWant='0 0 '+d.detectW+' '+d.detectH;
-      if(ov.getAttribute('viewBox')!==vbWant)ov.setAttribute('viewBox',vbWant);
-    }
     if(ov&&d.roiW!==undefined){
       var roi=ov.querySelector('.ov-roi');
-      var cx=(d.detectW||320)/2, cy=(d.detectH||240)/2;
-      var rx=cx-d.roiW/2+(d.roiX||0), ry=cy-d.roiH/2+(d.roiY||0);
+      var rx=160-d.roiW/2+(d.roiX||0), ry=120-d.roiH/2+(d.roiY||0);
       roi.setAttribute('x',rx);roi.setAttribute('y',ry);
       roi.setAttribute('width',d.roiW);roi.setAttribute('height',d.roiH);
       var dice=ov.querySelector('.ov-dice');

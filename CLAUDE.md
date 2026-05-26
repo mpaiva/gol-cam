@@ -79,8 +79,6 @@ SCOREBOARD_IP=192.168.0.110     # placar IP (camera pushes here)
 
 **Detection pipeline** (in `loop()`): captures grayscale frames at QVGA (320×240). During calibration, finds the most distinct object vs. background edges (Sobel gradient). During play, counts edge pixels matching calibrated threshold within ROI, applies size/density filters, triggers goal on dadinho-appears-after-absence with 10 s cooldown.
 
-**Fast mode** — `GET /calibrate?fast=1` (or the "Fast (RGB)" checkbox in the training dashboard) re-inits the camera to **QQVGA RGB565** before running calibration. The detection loop converts each RGB565 frame to 8-bit luma (`Y = (2R + 5G + B) / 8`) and reuses the same Sobel pipeline; JPEG encoding is throttled to every 4th frame to free CPU for detection. Measured ~23 fps vs. ~12 fps in the default QVGA grayscale path. Camera reinit happens on the loop thread (single producer for `esp_camera_fb_get`), so the stream/web server keeps running. `/calibrate` with no `fast` param reverts to QVGA grayscale. Switching modes invalidates calibration — the dadinho must be in view when the request fires. Autotune is refused in fast mode (uses grayscale-only Otsu math).
-
 **Side effects on goal:**
 1. `playGoalSound()` notifies a persistent FreeRTOS task that installs the I2S driver, plays one of three audio clips (Brasil/Flamengo/Vasco), then uninstalls to keep the amp silent.
 2. `pushGoalToScoreboard()` notifies another task that fires `GET http://${SCOREBOARD_IP}/goal?side=a|b`. Best-effort, fire-and-forget (no retry).
@@ -97,7 +95,7 @@ SCOREBOARD_IP=192.168.0.110     # placar IP (camera pushes here)
 |---|---|---|
 | Camera → Placar | `GET /goal?side=a\|b` | At goal detection (push, fire-and-forget) |
 | Browser → Placar | `GET /status` (1 s poll from the placar's own HTML), `GET /a+`, `/b+`, `/az`, `/bz`, `/reset`, `/api/reset` | Scoreboard dashboard |
-| Browser → Camera | `GET /status` (incl. `fastMode`, `detectW`, `detectH`, `pixFmt`), `GET /stream`, `GET /calibrate[?fast=1]`, other REST control endpoints | Training and match dashboards |
+| Browser → Camera | `GET /status`, `GET /stream`, REST control endpoints | Training and match dashboards |
 
 The camera reports its `"side"` in `/status`, resolved at boot from `SCOREBOARD_SIDE` (explicit override) then `BOARD_ROLE` (`home`→`B`, `away`→`A`, anything else→`A`). See `resolveScoreboardSide()` in `src/main.cpp`; `web_stream.cpp` reads the same global so `/status.side` always agrees with the push.
 

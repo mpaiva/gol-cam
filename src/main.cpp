@@ -31,23 +31,8 @@ GoalDetector detector;
 FrameStore frameStore;
 volatile bool goalJustScored = false;
 
-// Detection frame dimensions. Runtime-mutable because /calibrate?fast=1 can
-// re-init the camera to a smaller, faster QQVGA stream. See applyDetectionMode().
-volatile int detectW = 320;
-volatile int detectH = 240;
-
-// Fast-mode state. When true the camera is running at QQVGA RGB565 and the
-// detection loop reads luma out of the RGB stream into lumaBuf before Sobel.
-volatile bool fastMode = false;
-volatile pixformat_t currentPixFmt = PIXFORMAT_GRAYSCALE;
-
-// Pending mode-switch request handled from loop() so the camera reinit happens
-// on the same thread that owns esp_camera_fb_get(). -1 = no change.
-volatile int pendingFastMode = -1;
-
-// PSRAM-allocated buffer that holds the luma plane in fast mode. Large enough
-// for QVGA grayscale (76 800 B) so it's also valid if we ever go back to QVGA RGB.
-uint8_t* lumaBuf = nullptr;
+#define DETECT_W 320
+#define DETECT_H 240
 
 // Game states
 enum GameState { STATE_IDLE, STATE_CALIBRATING, STATE_PLAYING, STATE_PAUSED, STATE_AUTOTUNE };
@@ -105,7 +90,7 @@ volatile int lastMinPx = 0, lastMaxPx = 0, lastMaxBbox = 0;
 volatile float lastDensity = 0;
 volatile const char* lastRejectReason = "";
 
-// Last-detected dadinho bbox (in detectW/H pixel coords). Set during STATE_PLAYING
+// Last-detected dadinho bbox (in DETECT_W/H pixel coords). Set during STATE_PLAYING
 // when the dice passes the size/density filters; consumed by the dashboard's SVG
 // overlay. -1 = no current detection.
 volatile int diceBboxX = -1, diceBboxY = -1, diceBboxW = 0, diceBboxH = 0;
@@ -314,99 +299,14 @@ void initSpeaker() {
     Serial.println("[audio] Speaker task ready");
 }
 
-// Re-initialise the camera into the chosen detection mode. Called from loop()
-// (the only thread that owns esp_camera_fb_get) so we don't race the framework.
-// Normal: QVGA grayscale — full detail, slower (~12 fps).
-// Fast:   QQVGA RGB565 — 1/4 the pixels, RGB picked up via luma in the inner
-// loop. Real-world ~30-40 fps on the OV3660. Invalidates calibration.
-static bool applyDetectionMode(bool fast) {
-    if (fast == fastMode) return true;  // already there
-    Serial.printf("[cam] reconfig → %s\n", fast ? "QQVGA RGB565" : "QVGA GRAYSCALE");
-    esp_camera_deinit();
-    framesize_t fs = fast ? FRAMESIZE_QQVGA : FRAMESIZE_QVGA;
-    pixformat_t pf = fast ? PIXFORMAT_RGB565 : PIXFORMAT_GRAYSCALE;
-    if (!initCamera(fs, pf)) {
-        Serial.println("[cam] reinit failed — falling back to QVGA grayscale");
-        initCamera(FRAMESIZE_QVGA, PIXFORMAT_GRAYSCALE);
-        detectW = 320; detectH = 240;
-        currentPixFmt = PIXFORMAT_GRAYSCALE;
-        fastMode = false;
-        return false;
-    }
-    detectW = fast ? 160 : 320;
-    detectH = fast ? 120 : 240;
-    currentPixFmt = pf;
-    fastMode = fast;
-    // Re-apply the manual exposure/gain knobs that initCamera() leaves at sensor
-    // defaults — keeps detection conditions reproducible across mode switches.
-    sensor_t *s = esp_camera_sensor_get();
-    if (s) {
-        s->set_contrast(s, 1);
-        s->set_brightness(s, -1);
-        s->set_sharpness(s, 1);
-        if (!fast) s->set_special_effect(s, 2);  // grayscale-only filter
-        s->set_exposure_ctrl(s, 0);
-        s->set_aec_value(s, 150);
-        s->set_aec2(s, 0);
-        s->set_gain_ctrl(s, 0);
-        s->set_agc_gain(s, 8);
-        s->set_gainceiling(s, (gainceiling_t)1);
-        s->set_raw_gma(s, 0);
-        s->set_lenc(s, 0);
-    }
-    // Calibration thresholds don't translate across format/resolution.
-    calContrastMin = 0;
-    calPixelCount = 0;
-    calBboxW = calBboxH = 0;
-    // Reset ROI to centred default for the new resolution. The autotune ROI
-    // constants (304×160) are tuned for QVGA — in QQVGA we use the full frame.
-    if (fast) {
-        roiW = detectW; roiH = detectH;
-    } else {
-        roiW = AUTOTUNE_ROI_W; roiH = AUTOTUNE_ROI_H;
-    }
-    roiOffsetX = roiOffsetY = 0;
-    return true;
-}
-
-// Convert RGB565 fb to 8-bit luma in lumaBuf. RGB565 is big-endian on the
-// ESP32 camera (hi byte first), so swap when packing the 16-bit value.
-// Y = (2R + 5G + B) / 8 — cheap fixed-point approximation of ITU-R 601.
-static void rgb565ToLuma(const uint8_t* src, int w, int h) {
-    if (!lumaBuf) return;
-    int n = w * h;
-    for (int i = 0; i < n; i++) {
-        uint16_t px = ((uint16_t)src[i*2] << 8) | src[i*2 + 1];
-        int r = (px >> 11) & 0x1F;
-        int g = (px >> 5)  & 0x3F;
-        int b =  px        & 0x1F;
-        // Scale to 0..255 then weighted sum.
-        r = (r * 255 + 15) / 31;
-        g = (g * 255 + 31) / 63;
-        b = (b * 255 + 15) / 31;
-        lumaBuf[i] = (uint8_t)((r * 2 + g * 5 + b) >> 3);
-    }
-}
-
-// Called from HTTP handler to trigger calibration. `fast` requests a mode
-// switch first (applied at the top of the next loop() iteration).
-void requestCalibration(bool fast) {
-    pendingFastMode = fast ? 1 : 0;
+// Called from HTTP handler to trigger calibration
+void requestCalibration() {
     gameState = STATE_CALIBRATING;
-    Serial.printf("[cal] Calibration requested (fast=%d)\n", fast ? 1 : 0);
+    Serial.println("[cal] Calibration requested");
 }
 
 void requestAutotune() {
     if (gameState != STATE_IDLE) return;
-    if (fastMode) {
-        // Autotune uses Otsu + roiStdev on the grayscale fb directly. Refuse in
-        // RGB565 mode rather than silently producing garbage. Operator can
-        // /calibrate (without ?fast=1) to drop back to grayscale, then autotune.
-        snprintf(calFeedback, sizeof(calFeedback),
-            "Auto-tune unavailable in fast mode. Calibrate without 'fast' first.");
-        Serial.println("[tune] refused — fast mode active");
-        return;
-    }
     autotuneStage = 0;
     autotuneStep = 0;
     autotuneTotalSteps = 0;
@@ -486,11 +386,6 @@ void setup() {
         Serial.println("WARN: goal snapshot alloc failed");
     }
 
-    // Luma buffer used when running in fast mode (RGB565 fb → 8-bit Y plane).
-    // Sized for QVGA so we never have to realloc when the user toggles modes.
-    lumaBuf = (uint8_t*)ps_malloc(320 * 240);
-    if (!lumaBuf) Serial.println("WARN: lumaBuf alloc failed — fast mode disabled");
-
     if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_GRAYSCALE)) {
         Serial.println("FATAL: Camera init failed!");
         while (true) delay(1000);
@@ -567,12 +462,12 @@ void applyThreshold(uint8_t* pixels, int w, int h, int threshold) {
 // Helper: compute ROI bounds
 void computeROI(int &rx, int &ry, int &rw, int &rh) {
     rw = roiW; rh = roiH;
-    rx = (detectW - rw) / 2 + roiOffsetX;
-    ry = (detectH - rh) / 2 + roiOffsetY;
+    rx = (DETECT_W - rw) / 2 + roiOffsetX;
+    ry = (DETECT_H - rh) / 2 + roiOffsetY;
     if (rx < 0) rx = 0;
     if (ry < 0) ry = 0;
-    if (rx + rw > detectW) rx = detectW - rw;
-    if (ry + rh > detectH) ry = detectH - rh;
+    if (rx + rw > DETECT_W) rx = DETECT_W - rw;
+    if (ry + rh > DETECT_H) ry = DETECT_H - rh;
 }
 
 // 3x3 Sobel edge detection on grayscale ROI
@@ -600,16 +495,16 @@ void saveCalSnapshot(camera_fb_t* fb, uint8_t* pixels, int x1, int y1, int x2, i
 
     if (x1 >= 0) {
         for (int x = x1; x <= x2; x++) {
-            pixels[y1 * detectW + x] = color;
-            if (y1 + 1 < detectH) pixels[(y1+1) * detectW + x] = color;
-            pixels[y2 * detectW + x] = color;
-            if (y2 - 1 >= 0) pixels[(y2-1) * detectW + x] = color;
+            pixels[y1 * DETECT_W + x] = color;
+            if (y1 + 1 < DETECT_H) pixels[(y1+1) * DETECT_W + x] = color;
+            pixels[y2 * DETECT_W + x] = color;
+            if (y2 - 1 >= 0) pixels[(y2-1) * DETECT_W + x] = color;
         }
         for (int y = y1; y <= y2; y++) {
-            pixels[y * detectW + x1] = color;
-            if (x1 + 1 < detectW) pixels[y * detectW + x1 + 1] = color;
-            pixels[y * detectW + x2] = color;
-            if (x2 - 1 >= 0) pixels[y * detectW + x2 - 1] = color;
+            pixels[y * DETECT_W + x1] = color;
+            if (x1 + 1 < DETECT_W) pixels[y * DETECT_W + x1 + 1] = color;
+            pixels[y * DETECT_W + x2] = color;
+            if (x2 - 1 >= 0) pixels[y * DETECT_W + x2 - 1] = color;
         }
     }
 
@@ -642,12 +537,12 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
     // Need 1px border for Sobel kernel
     int sx = max(1, rx + marginX);
     int sy = max(1, ry + marginY);
-    int ex = min(detectW - 2, rx + rw - marginX);
-    int ey = min(detectH - 2, ry + rh - marginY);
+    int ex = min(DETECT_W - 2, rx + rw - marginX);
+    int ey = min(DETECT_H - 2, ry + rh - marginY);
 
     for (int y = sy; y <= ey; y++) {
         for (int x = sx; x <= ex; x++) {
-            int mag = sobelMag(pixels, x, y, detectW);
+            int mag = sobelMag(pixels, x, y, DETECT_W);
             if (mag > peakMag) peakMag = mag;
         }
     }
@@ -669,11 +564,11 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
 
     // Step 3: Count edge pixels and measure bounding box
     uint32_t edgeCount = 0;
-    int minX = detectW, maxX = 0, minY = detectH, maxY = 0;
+    int minX = DETECT_W, maxX = 0, minY = DETECT_H, maxY = 0;
 
     for (int y = sy; y <= ey; y++) {
         for (int x = sx; x <= ex; x++) {
-            int mag = sobelMag(pixels, x, y, detectW);
+            int mag = sobelMag(pixels, x, y, DETECT_W);
             if (mag >= threshold) {
                 edgeCount++;
                 if (x < minX) minX = x;
@@ -712,8 +607,8 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
     // Save snapshot with white bbox
     int bx1 = max(0, minX - 2);
     int by1 = max(0, minY - 2);
-    int bx2 = min(detectW - 1, maxX + 2);
-    int by2 = min(detectH - 1, maxY + 2);
+    int bx2 = min(DETECT_W - 1, maxX + 2);
+    int by2 = min(DETECT_H - 1, maxY + 2);
     saveCalSnapshot(fb, pixels, bx1, by1, bx2, by2, 255);
 
     Serial.printf("[cal] SUCCESS! Edge threshold=%d, %d edges, bbox=%dx%d\n",
@@ -831,8 +726,8 @@ static long captureAndScore(const CamSettings& c, int* bestT, bool pushStreamFra
     }
     int rx, ry, rw, rh;
     computeROI(rx, ry, rw, rh);
-    long score = roiStdev(fb->buf, detectW, rx, ry, rw, rh);
-    otsuScore(fb->buf, detectW, rx, ry, rw, rh, bestT);
+    long score = roiStdev(fb->buf, DETECT_W, rx, ry, rw, rh);
+    otsuScore(fb->buf, DETECT_W, rx, ry, rw, rh, bestT);
     if (pushStreamFrame) {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
@@ -943,16 +838,6 @@ void loop() {
     static uint32_t fpsCount = 0;
     static uint32_t lastFpsTime = millis();
     static uint32_t lastPrint = 0;
-
-    // Apply pending camera reconfig at a safe point (before grabbing a frame
-    // from a stale framework). HTTP handler sets pendingFastMode; we own
-    // esp_camera_fb_get on this thread so deinit/reinit is race-free here.
-    if (pendingFastMode >= 0) {
-        bool target = (pendingFastMode == 1);
-        pendingFastMode = -1;
-        applyDetectionMode(target);
-    }
-
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) { delay(10); return; }
 
@@ -966,28 +851,14 @@ void loop() {
         lastFpsTime = now;
     }
 
-    // Validate framebuffer matches the configured detection mode and produce
-    // a uint8 luma buffer for Sobel. Grayscale fb is luma directly; RGB565 is
-    // converted into lumaBuf once per frame.
-    uint8_t* pixels = nullptr;
-    if (currentPixFmt == PIXFORMAT_GRAYSCALE) {
-        size_t expectedLen = (size_t)detectW * detectH;
-        if (fb->format != PIXFORMAT_GRAYSCALE || fb->len < expectedLen) {
-            esp_camera_fb_return(fb);
-            delay(100);
-            return;
-        }
-        pixels = fb->buf;
-    } else {  // PIXFORMAT_RGB565
-        size_t expectedLen = (size_t)detectW * detectH * 2;
-        if (fb->format != PIXFORMAT_RGB565 || fb->len < expectedLen || !lumaBuf) {
-            esp_camera_fb_return(fb);
-            delay(100);
-            return;
-        }
-        rgb565ToLuma(fb->buf, detectW, detectH);
-        pixels = lumaBuf;
+    size_t expectedLen = DETECT_W * DETECT_H;
+    if (fb->format != PIXFORMAT_GRAYSCALE || fb->len < expectedLen) {
+        esp_camera_fb_return(fb);
+        delay(100);
+        return;
     }
+
+    uint8_t* pixels = fb->buf;
 
     // Handle calibration
     if (gameState == STATE_CALIBRATING) {
@@ -1010,7 +881,7 @@ void loop() {
     // Not playing: stream the binarized grayscale frame (no overlays — those
     // are drawn client-side as SVG over the <img>).
     if ((gameState != STATE_PLAYING) || calContrastMin <= 0) {
-        applyThreshold(pixels, detectW, detectH, contrastThreshold);
+        applyThreshold(pixels, DETECT_W, DETECT_H, contrastThreshold);
         diceBboxX = -1;
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
@@ -1033,15 +904,15 @@ void loop() {
     // Sobel on ROI only (need 1px border for kernel)
     int sx = max(1, rx);
     int sy = max(1, ry);
-    int ex = min(detectW - 2, rx + rw - 1);
-    int ey = min(detectH - 2, ry + rh - 1);
+    int ex = min(DETECT_W - 2, rx + rw - 1);
+    int ey = min(DETECT_H - 2, ry + rh - 1);
 
     uint32_t matchCount = 0;
-    int minX = detectW, maxX = 0, minY = detectH, maxY = 0;
+    int minX = DETECT_W, maxX = 0, minY = DETECT_H, maxY = 0;
 
     for (int y = sy; y <= ey; y++) {
         for (int x = sx; x <= ex; x++) {
-            int mag = sobelMag(pixels, x, y, detectW);
+            int mag = sobelMag(pixels, x, y, DETECT_W);
             if (mag >= calContrastMin) {
                 matchCount++;
                 if (x < minX) minX = x;
@@ -1082,7 +953,7 @@ void loop() {
     else lastRejectReason = "REJECTED";
 
     // Apply post-threshold to the grayscale buffer (used for the visualization)
-    applyThreshold(pixels, detectW, detectH, contrastThreshold);
+    applyThreshold(pixels, DETECT_W, DETECT_H, contrastThreshold);
 
     // Check goal
     detector.lastChangeRatio = (float)matchCount / (rw * rh);
@@ -1098,15 +969,11 @@ void loop() {
         diceBboxX = -1;
     }
 
-    // Encode the (binarized) grayscale frame — overlays drawn client-side.
-    // In fast mode the JPEG encode dominates the per-frame cost, so we only
-    // run it every 4th frame (≈ 8-10 fps stream) unless a goal needs to be
-    // snapshotted. Detection still runs at full frame rate.
-    bool shouldEncode = !fastMode || (frameNum % 4 == 0) || isGoal;
-    if (shouldEncode) {
+    // Encode the (binarized) grayscale frame — overlays drawn client-side
+    {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
-        if (frame2jpg(fb, fastMode ? 60 : 70, &jpg_buf, &jpg_len)) {
+        if (frame2jpg(fb, 70, &jpg_buf, &jpg_len)) {
             frameStore.update(jpg_buf, jpg_len);
             if (isGoal && goalSnapshotBuf && goalSnapshotMutex) {
                 xSemaphoreTake(goalSnapshotMutex, portMAX_DELAY);
