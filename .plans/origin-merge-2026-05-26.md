@@ -1,8 +1,28 @@
 ---
 date: 2026-05-26
 prompt: "please check this repo agains origin and evaluate what needs to be updated."
-status: in progress
+status: complete — merge commit 1aa4619
 ---
+
+## Outcome
+
+Merge committed as `1aa4619`. Both `pio run -e dfr1154` and
+`pio run -e placar` succeed. Branch is 14 commits ahead of origin/master
+(13 local + merge). Not yet pushed — awaiting user.
+
+Notes from execution:
+- Git auto-merged most of `src/match_dashboard.h` JS additions cleanly
+  outside the conflict regions (boards.placar, pollPlacar, connect()
+  changes); only the conflict regions needed manual resolution.
+- Remote's added `goalPushTask` + `initScoreboardPush` survived
+  auto-merge in `src/main.cpp` outside the conflict region and caused
+  a "redefinition of pushGoalToScoreboard" build error; deleted the
+  remote block (lines 302–351) since local has its own debugged push.
+- `src/main_placar.cpp` + `src/placar_*.cpp` + `include/placar_*.h`
+  + `include/pins_placar.h` were kept in the tree as documentation
+  but excluded from both PlatformIO envs via `build_src_filter`.
+
+
 
 # Origin Merge Plan — 2026-05-26
 
