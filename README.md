@@ -1,72 +1,148 @@
 # gol-cam
 
-An ESP32-S3 camera system that detects goals in **futebol de botao** (button soccer) and triggers celebrations. Built for the **Dadinho** variant, it uses computer vision to spot the small yellow cube crossing the goal line.
+Sistema eletrônico completo para **futebol de botão**: uma câmera que detecta gols por visão computacional, um placar de LED que mostra a contagem e um conjunto de peças impressas em 3D que une tudo. Construído para a variante **Dadinho** — o pequeno dado de 4-6 mm usado como bola.
 
-## How It Works
+## Visão geral do sistema
 
-A DFRobot DFR1154 (ESP32-S3 + OV3660 camera) watches the goal area. You calibrate by placing the dadinho in view, and the system learns its color and size. During play, it detects the cube entering the goal, captures a snapshot, and keeps score — all through a web UI served over WiFi.
+Três componentes coordenados em um único repositório:
 
-Features:
-- Live MJPEG camera stream
-- One-click calibration with visual feedback
-- Automatic goal detection with 10-second cooldown
-- Goal photo log with timestamps
-- VAR (Video Assistant Referee) review system
-- Game controls: pause, resume, reset, end game
+| Componente | Hardware | Função |
+|---|---|---|
+| **Câmera** | DFRobot DFR1154 (ESP32-S3 + OV3660) | Detecta gols por visão baseada em bordas; serve o painel web e o stream MJPEG |
+| **Placar** | ESP32 DevKit V1 + 4× matrizes de LED MAX7219 8×8 + 4 botões | Exibe o placar em dígitos de LED físicos; recebe eventos de gol da câmera e suporta override manual |
+| **Hardware** | Caixas impressas em 3D (`hardware/`) | Trave, caixa da câmera, gabinete do placar, acessórios |
 
-## Futebol de Botao and the Dadinho in Rio de Janeiro
+**Topologia de rede:**
 
-**Futebol de botao** (button football) is a tabletop sport born in Brazil in the 1930s, where players flick round discs to move a smaller piece — the ball — across a miniature pitch. The game emerged from the creativity of Brazilian kids who fashioned buttons, bottle caps, and coins into teams, playing on dining tables and wooden boards across the country.
+```
+                  ┌──────────────┐
+                  │  Smartphone  │
+                  │  / tablet    │
+                  └───────┬──────┘
+                          │ Painel HTTP (navegador faz polling)
+                          │
+       ┌──────────────────┼──────────────────┐
+       │                  │                  │
+       ▼                  ▼                  ▼
+┌────────────┐     ┌────────────┐     ┌────────────┐
+│ Câmera A   │     │ Câmera B   │     │ Placar     │
+│ DFR1154    │     │ DFR1154    │     │ ESP32 +    │
+│ side=A     │     │ side=B     │     │ MAX7219    │
+└──────┬─────┘     └──────┬─────┘     └─────▲──────┘
+       │                  │                 │
+       └──────────────────┴─────────────────┘
+              POST /goal {"side":"A|B"}   na detecção
+              (fallback de polling do placar @500 ms via /status)
+```
 
-### Origins
+Para uma configuração com apenas uma câmera, omita a Câmera B e o `PEER_IP` do placar. O placar também pode operar de forma **autônoma** — se a conexão WiFi falhar, ele volta para o modo AP `PLACAR_WIFI` (192.168.4.1), e os 4 botões físicos continuam funcionando.
 
-The sport's roots trace to the 1930s and 1940s, when Geraldo Decourt of Sao Paulo published the first formal rules in 1930. What started as a children's pastime quickly grew into an organized competitive activity. By the mid-20th century, clubs and federations had formed, and regional rule variations flourished.
+## Como funciona a detecção
 
-### Rio de Janeiro and the Regra Carioca
+Um DFR1154 (ESP32-S3 + câmera grande-angular OV3660) observa a área do gol. Você calibra colocando o dadinho no campo de visão, e o sistema aprende a assinatura de bordas dele. Durante a partida, ele detecta o cubo entrando no gol, captura uma foto, toca um som de comemoração pelo alto-falante I2S, envia o evento de gol para o placar e mantém a contagem — tudo via WiFi.
 
-Rio de Janeiro became one of the sport's most important centers, developing its own distinctive style known as the **Regra Carioca** (Carioca Rules) or **3 Toques** (3 Touches). Under these rules, a player gets up to three flicks per turn to advance the ball, creating a faster, more tactical game compared to other regional variants.
+Recursos:
+- Stream MJPEG ao vivo da câmera
+- Calibração em um clique com feedback visual
+- Detecção automática de gols com cooldown de 10 segundos
+- Registro de fotos dos gols com horário
+- Sistema de revisão tipo VAR (árbitro de vídeo)
+- Controles de jogo: pausar, retomar, reiniciar, encerrar partida
+- Placar físico de LED com botões de override manual
+- Operação autônoma do placar quando a câmera está offline
 
-The city's competitive scene thrived through decades of neighborhood rivalries, club tournaments, and state championships. Carioca players became known for their technical precision and creative play, mirroring the style of Rio's real football culture.
+## Futebol de Botão e o Dadinho no Rio de Janeiro
 
-### The Dadinho
+O **futebol de botão** é um esporte de mesa nascido no Brasil na década de 1930, no qual jogadores impulsionam discos circulares com o dedo para movimentar uma peça menor — a bola — por um campo em miniatura. O jogo surgiu da criatividade da garotada brasileira, que transformava botões, tampinhas de garrafa e moedas em times, jogando em mesas de jantar e tabuleiros de madeira pelo país.
 
-The **Dadinho** (little dice) variant represents a distinct branch of button football. Instead of traditional round discs, players use small dice — typically 6mm yellow cubes — as the playing pieces. The name comes from "dado" (dice) with the diminutive "-inho" suffix.
+### Origens
 
-Dadinho was officially recognized by the Confederacao Brasileira de Futebol de Mesa (CBFM) in 2010, giving it the same institutional standing as the traditional disc-based modalities. The variant has its own dedicated competitive circuit, with the Brazilian Dadinho Championship reaching its 16th edition in 2025.
+As raízes do esporte remontam às décadas de 1930 e 1940, quando Geraldo Decourt, de São Paulo, publicou as primeiras regras formais em 1930. O que começou como passatempo infantil rapidamente cresceu para uma atividade competitiva organizada. Em meados do século XX, clubes e federações já haviam se formado, e variações regionais de regras floresceram.
 
-### Cultural Significance
+### Rio de Janeiro e a Regra Carioca
 
-Futebol de botao occupies a unique place in Brazilian culture. It combines the country's passion for football with the social tradition of tabletop gaming. For generations of Brazilians — especially Cariocas — it was a gateway into the world of sport, played on kitchen tables before school, at club social halls on weekends, and in serious competitive tournaments.
+O Rio de Janeiro se tornou um dos centros mais importantes do esporte, desenvolvendo seu próprio estilo distinto conhecido como **Regra Carioca** ou **3 Toques**. Por essas regras, o jogador tem até três toques por jogada para avançar a bola, criando um jogo mais rápido e mais tático em comparação com outras variantes regionais.
 
-The sport continues to evolve, with active federations, regular tournaments, and a dedicated community that preserves its traditions while welcoming innovations — like this project, which brings computer vision to the goal line.
+### O Dadinho
+
+A variante **Dadinho** representa um ramo distinto do futebol de botão. Em vez dos tradicionais discos redondos, os jogadores usam pequenos dados — tipicamente cubos amarelos de 6 mm — como peças. O nome vem de "dado" com o sufixo diminutivo "-inho".
+
+O Dadinho foi oficialmente reconhecido pela Confederação Brasileira de Futebol de Mesa (CBFM) em 2010, dando-lhe a mesma posição institucional das modalidades tradicionais baseadas em disco. A variante tem seu próprio circuito competitivo dedicado, com o Campeonato Brasileiro de Dadinho chegando à 16ª edição em 2025.
 
 ## Hardware
 
-- **DFRobot DFR1154** — ESP32-S3 with OV3660 camera, 16MB flash, 8MB PSRAM
-- Standard micro USB-C for power and programming
+### Lista de materiais (BOM)
 
-## Getting Started
+**Placa da câmera (×1 modo single ou ×2 modo match):**
+- 1× DFRobot DFR1154 (ESP32-S3 + OV3660, 16 MB flash, 8 MB PSRAM)
+- 1× amplificador I2S MAX98357 + alto-falante pequeno (já inclusos na placa DFR1154)
+- Cabo USB-C para alimentação e gravação
 
-### Prerequisites
+**Placa do placar (×1, opcional):**
+- 1× ESP32 DevKit V1 (qualquer ESP32 com ≥8 GPIOs livres)
+- 4× módulos de matriz de LED MAX7219 8×8 (cadeia FC-16), 2 por lado
+- 4× push buttons (momentâneos, normalmente abertos)
+- Jumpers e fonte de 5 V (USB no DevKit funciona)
+
+**Mecânica:**
+- Peças impressas em 3D a partir de `hardware/` (PLA, veja `hardware/README.md` para configurações do slicer)
+
+### Fiação do placar (ESP32 DevKit V1)
+
+**Display A** (placar da esquerda, 2 módulos em cadeia, DOUT → DIN):
+
+| MAX7219 | GPIO | Macro (`include/pins_placar.h`) |
+|---|---|---|
+| DIN | 23 | `PLACAR_DIN_A` |
+| CLK | 18 | `PLACAR_CLK_A` |
+| CS  | 5  | `PLACAR_CS_A`  |
+| VCC | 5V (VIN) | — |
+| GND | GND | — |
+
+**Display B** (placar da direita, 2 módulos em cadeia):
+
+| MAX7219 | GPIO | Macro |
+|---|---|---|
+| DIN | 19 | `PLACAR_DIN_B` |
+| CLK | 21 | `PLACAR_CLK_B` |
+| CS  | 22 | `PLACAR_CS_B`  |
+
+**Botões** (cada um do GPIO ao GND, `INPUT_PULLUP` — sem resistores externos):
+
+| Botão | GPIO | Macro | Ação |
+|---|---|---|---|
+| UP A | 32 | `PLACAR_BTN_UP_A` | Incrementa lado A |
+| DW A | 33 | `PLACAR_BTN_DW_A` | Zera lado A |
+| UP B | 25 | `PLACAR_BTN_UP_B` | Incrementa lado B |
+| DW B | 26 | `PLACAR_BTN_DW_B` | Zera lado B |
+
+### Pinagem da câmera
+
+Veja `include/pins.h` — pré-configurada para a placa DFR1154. Não precisa fazer fiação.
+
+### Peças impressas em 3D
+
+Veja `hardware/README.md` para o catálogo de peças (trave V4, caixa da câmera V5.2, gabinete do placar, suporte de alto-falante, grade de cooler) com recomendações de fatiamento.
+
+## Primeiros passos
+
+### Pré-requisitos
 
 - [Git](https://git-scm.com/downloads)
-- [Python 3](https://www.python.org/downloads/) (check "Add to PATH" on Windows installer)
-- DFRobot DFR1154 board connected via USB-C
-- **Windows only:** [CP210x USB driver](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) (may be needed for serial communication)
+- [Python 3](https://www.python.org/downloads/) (marque "Add to PATH" no instalador do Windows)
+- Cabo USB-C para o DFR1154; cabo USB para o ESP32 DevKit
+- **Apenas Windows:** [driver USB CP210x](https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers) (pode ser necessário para comunicação serial)
 
-### Step 1 — Clone the repo
-
-**Mac (Terminal) / Windows (PowerShell or Command Prompt):**
+### Passo 1 — Clonar o repositório
 
 ```bash
 git clone https://github.com/mpaiva/gol-cam.git
 cd gol-cam
 ```
 
-### Step 2 — Create a Python virtual environment
+### Passo 2 — Criar um ambiente virtual Python
 
 **Mac (Terminal):**
-
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -74,99 +150,109 @@ pip install platformio
 ```
 
 **Windows (PowerShell):**
-
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install platformio
 ```
 
-> If PowerShell blocks the script, run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` first.
+> Se o PowerShell bloquear o script, rode `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` antes.
 
-**Windows (Command Prompt):**
+### Passo 3 — Configurar `.env`
 
-```cmd
-python -m venv .venv
-.venv\Scripts\activate.bat
-pip install platformio
-```
+Crie um arquivo `.env` na raiz do projeto (ignorado pelo git):
 
-### Step 3 — Set your WiFi credentials
+```ini
+# Obrigatório — mesma WiFi para câmera e placar
+WIFI_SSID=nome-da-sua-rede
+WIFI_PASSWORD=sua-senha
 
-Create a `.env` file in the project root (this file is git-ignored).
-
-**Mac:**
-
-```bash
-echo "WIFI_SSID=your-network-name" > .env
-echo "WIFI_PASSWORD=your-password" >> .env
-```
-
-**Windows (PowerShell):**
-
-```powershell
-"WIFI_SSID=your-network-name`nWIFI_PASSWORD=your-password" | Out-File -Encoding utf8 .env
-```
-
-**Or on any platform**, just create a file called `.env` in the project root with a text editor:
-
-```
-WIFI_SSID=your-network-name
-WIFI_PASSWORD=your-password
-```
-
-**Optional — Static IP:** Add these lines to `.env` if you want a fixed address on your network:
-
-```
+# Opcional — IPs estáticos ajudam no modo match
 WIFI_STATIC_IP=192.168.0.100
 WIFI_GATEWAY=192.168.0.1
 WIFI_SUBNET=255.255.255.0
+
+# Opcional — tags de papel para o modo match
+BOARD_ROLE=goal_a            # ou goal_b, single, scoreboard
+PEER_IP=192.168.0.101        # IP da outra câmera (modo match)
+SCOREBOARD_IP=192.168.0.110  # IP do placar (câmera envia gols para cá)
+CAMERA_IP=192.168.0.100      # IP da câmera (placar faz polling como fallback)
 ```
 
-### Step 4 — Build the firmware
+`load_env.py` lê esses valores e injeta como `-D` defines de build, então são compilados no firmware. Placas diferentes precisam de valores `.env` diferentes — grave uma, altere o `.env`, grave a próxima.
+
+### Passo 4 — Compilar e gravar
+
+Dois ambientes PlatformIO convivem no mesmo projeto:
 
 ```bash
-pio run
+# Câmera (padrão — igual a `pio run`)
+pio run -e dfr1154 -t upload
+
+# Placar
+pio run -e placar -t upload
 ```
 
-### Step 5 — Upload to the board
+O ambiente padrão é `dfr1154`, então um `pio run` sem parâmetros compila a câmera. Grave uma placa por vez, ajustando o `.env` entre gravações se quiser valores diferentes de `BOARD_ROLE` ou IP estático.
 
-Plug in the DFR1154 via USB-C, then:
+### Passo 5 — Descobrir o IP e abrir o painel
 
 ```bash
-pio run -t upload
+pio device monitor   # baud 115200, procure "Dashboard: http://..." na câmera
 ```
 
-> **Windows:** If the upload fails, check Device Manager to confirm the board appears as a COM port. You may need the CP210x driver linked above.
+Abra o IP da câmera no navegador. Você verá o seletor de modo:
+- **Training (Treino)** — uma câmera, calibração e prática
+- **Match (Partida)** — duas câmeras + placar opcional; configure os IPs na primeira carga (salvos no `localStorage`)
 
-> **Mac:** If you see a permission error, you may need to allow the USB device in **System Settings > Privacy & Security**.
+O placar serve sua própria interface simples no IP dele (incremento/reset manual, mais o status atual da conexão).
 
-### Step 6 — Find the IP address
+## Operação
 
-Open the serial monitor to see the board's IP:
+### Fluxo padrão de partida
 
-```bash
-pio device monitor
+1. **Calibre cada câmera** — coloque o dadinho na frente do gol, clique em "Calibrate"
+2. **Inicie o jogo** — o painel de partida mostra os feeds ao vivo e o placar unificado
+3. **Jogue** — a câmera detecta gols, toca som de comemoração, envia o evento para o placar e incrementa o placar de LED
+4. **Revisão VAR** — clique em qualquer entrada de gol para confirmar ou anular (gols anulados subtraem do lado certo)
+5. **Pausar / retomar / reiniciar / encerrar** — controles atingem todas as placas simultaneamente
+
+### Fallback do placar (sem câmera ou câmera offline)
+
+Se a câmera estiver inacessível, o placar continua funcionando:
+- WiFi STA falhou → modo AP `PLACAR_WIFI` / `12345678`, abra `http://192.168.4.1`
+- Botões físicos sempre funcionam (UP / RESET por lado)
+- A interface web manual espelha os botões
+
+## Estrutura do repositório
+
+```
+gol-cam/
+├── platformio.ini              # Dois ambientes: dfr1154 + placar
+├── partitions.csv              # Layout de 16 MB de flash para a câmera
+├── load_env.py                 # .env → -D defines de build
+├── .env                        # WiFi + overrides de papel/IP (ignorado pelo git)
+├── include/
+│   ├── camera.h, pins.h        # Câmera (DFR1154)
+│   ├── frame_store.h, goal_detector.h, gol_sound*.h
+│   ├── pins_placar.h           # GPIOs do placar
+│   ├── placar_display.h        # Driver MAX7219
+│   ├── placar_buttons.h        # Leitor de botões com debounce
+│   └── placar_web.h            # Contrato do servidor HTTP do placar
+├── src/
+│   ├── main.cpp                # Entry da câmera + loop de detecção + push de gol
+│   ├── web_stream.cpp          # Servidor HTTP da câmera (esp_http_server)
+│   ├── mode_select.h, training_dashboard.h, match_dashboard.h
+│   ├── main_placar.cpp         # Entry do placar + WiFi/AP + polling da câmera
+│   ├── placar_display.cpp      # Renderização MAX7219
+│   ├── placar_buttons.cpp      # Debounce dos botões
+│   └── placar_web.cpp          # WebServer do placar + /goal /sync /status
+├── hardware/                   # Caixas impressas em 3D
+├── .about/                     # Proposta de valor, feature requests
+├── .plans/                     # Planos de implementação, notas de sessão
+└── .reports/                   # Pesquisa, auditoria de UX, screenshots
 ```
 
-Look for the line:
-
-```
-Dashboard: http://192.168.x.x
-```
-
-Press `Ctrl+C` to exit the monitor.
-
-### Step 7 — Open the dashboard
-
-Open the IP address from the serial monitor in your browser. Your computer must be on the same WiFi network as the board. From there you can:
-
-1. **Calibrate** — Place the dadinho in the goal area and click "Calibrate"
-2. **Start Game** — Click "Start Game" to begin detection
-3. **Play** — The system detects goals automatically, captures snapshots, and keeps score
-4. **VAR Review** — Click "VAR" on any goal to review and confirm or annul it
-5. **Game Controls** — Pause, resume, reset, or end the game at any time
-
-## License
+## Licença
 
 MIT

@@ -110,6 +110,9 @@ static esp_err_t status_handler(httpd_req_t *req) {
 #ifdef SCOREBOARD_IP
     scoreboardIp = SCOREBOARD_IP;
 #endif
+    // Derive side from BOARD_ROLE so the scoreboard knows which counter to increment.
+    // BOARD_ROLE=goal_b → "B"; everything else (goal_a, single, unset) → "A".
+    const char* side = (strstr(role, "_b") != NULL || strstr(role, "_B") != NULL) ? "B" : "A";
     snprintf(buf, sizeof(buf),
         "{\"goals\":%d,\"fps\":%d,\"change\":%.2f,\"frames\":%d,\"scored\":%s,"
         "\"state\":%d,\"calibrated\":%s,\"calContrast\":%d,"
@@ -117,7 +120,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"matchPx\":%d,\"bboxW\":%d,\"bboxH\":%d,\"density\":%.0f,"
         "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\","
         "\"calMsg\":\"%s\",\"hasSnap\":%s,\"goalSeq\":%d,\"cdRemain\":%d,"
-        "\"role\":\"%s\",\"peer\":\"%s\",\"roiX\":%d,\"roiY\":%d,\"roiW\":%d,\"roiH\":%d,"
+        "\"role\":\"%s\",\"side\":\"%s\",\"peer\":\"%s\",\"roiX\":%d,\"roiY\":%d,\"roiW\":%d,\"roiH\":%d,"
         "\"diceX\":%d,\"diceY\":%d,\"diceW\":%d,\"diceH\":%d,"
         "\"autoStage\":%d,\"autoStep\":%d,\"autoTotal\":%d,\"autoScore\":%d,\"autoDone\":%d,"
         "\"autoGain\":%d,\"autoGceil\":%d,\"autoAec\":%d,\"autoGma\":%d,\"autoLenc\":%d,"
@@ -137,7 +140,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         calFeedback,
         calSnapshotLen > 0 ? "true" : "false",
         (int)goalSnapshotSeq, cdRemain,
-        role, peer, (int)roiOffsetX, (int)roiOffsetY, (int)roiW, (int)roiH,
+        role, side, peer, (int)roiOffsetX, (int)roiOffsetY, (int)roiW, (int)roiH,
         (int)diceBboxX, (int)diceBboxY, (int)diceBboxW, (int)diceBboxH,
         (int)autotuneStage, (int)autotuneStep, (int)autotuneTotalSteps, (int)autotuneBestScore, (int)autotuneDone,
         (int)autotuneBestGain, (int)autotuneBestGceil, (int)autotuneBestAec,

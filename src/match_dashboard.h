@@ -166,6 +166,9 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <div class='cfg-row'>
 <label data-i18n='match.away'>Away</label><input id='ip-away' placeholder='192.168.x.x'>
 </div>
+<div class='cfg-row'>
+<label data-i18n='match.placar'>Placar</label><input id='ip-placar' placeholder='192.168.x.x'>
+</div>
 <button class='btn btn-go' id='btn-connect' onclick='connect()' data-i18n='match.connect'>Connect</button>
 <div id='cfg-msg'></div>
 </div>
@@ -173,6 +176,7 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <div id='scoreboard'>
 <div id='score-line'><span id='score-home'>0</span><span class='x'>×</span><span id='score-away'>0</span></div>
 <div class='team-labels'><span id='lbl-home' data-i18n='match.home_label'>HOME</span><span id='lbl-away' data-i18n='match.away_label'>AWAY</span></div>
+<div id='placar-status'></div>
 </div>
 
 <div id='feeds'>
@@ -315,7 +319,8 @@ en:{
 'match.offline':'OFFLINE','match.ready':'READY','match.idle':'IDLE',
 'match.cal_state':'CAL...','match.playing':'PLAYING','match.paused':'PAUSED',
 'match.goal_num':'GOL #%d (%s)',
-'match.scorer_home':'HOME','match.scorer_away':'AWAY'
+'match.scorer_home':'HOME','match.scorer_away':'AWAY',
+'match.placar':'Placar','match.placar_ok':'Placar: online (%d × %d)','match.placar_off':'Placar: offline','match.placar_none':''
 },
 pt:{
 'nav.menu':'← Menu',
@@ -339,7 +344,8 @@ pt:{
 'match.offline':'OFFLINE','match.ready':'PRONTO','match.idle':'AGUARDANDO',
 'match.cal_state':'CAL...','match.playing':'JOGANDO','match.paused':'PAUSADO',
 'match.goal_num':'GOL #%d (%s)',
-'match.scorer_home':'CASA','match.scorer_away':'FORA'
+'match.scorer_home':'CASA','match.scorer_away':'FORA',
+'match.placar':'Placar','match.placar_ok':'Placar: online (%d × %d)','match.placar_off':'Placar: offline','match.placar_none':''
 }
 };
 var curLang='en';
@@ -364,13 +370,15 @@ else{var nav=navigator.language||'';curLang=nav.startsWith('pt')?'pt':'en';}
 
 const $=id=>document.getElementById(id);
 let boards={home:{ip:'',online:false,goals:0,goalSeq:0,state:-1,calibrated:false},
-            away:{ip:'',online:false,goals:0,goalSeq:0,state:-1,calibrated:false}};
+            away:{ip:'',online:false,goals:0,goalSeq:0,state:-1,calibrated:false},
+            placar:{ip:'',online:false,a:0,b:0}};
 let polling=null;
 let varEntry=null,varBtn=null,varSide=null;
 
 try{
   const saved=JSON.parse(localStorage.getItem('gol-match'));
-  if(saved){$('ip-home').value=saved.home||'';$('ip-away').value=saved.away||'';}
+  if(saved){$('ip-home').value=saved.home||'';$('ip-away').value=saved.away||'';
+            $('ip-placar').value=saved.placar||'';}
 }catch(e){}
 
 (async function(){
@@ -384,10 +392,10 @@ try{
 })();
 
 function connect(){
-  const h=$('ip-home').value.trim(),a=$('ip-away').value.trim();
+  const h=$('ip-home').value.trim(),a=$('ip-away').value.trim(),p=$('ip-placar').value.trim();
   if(!h||!a){$('cfg-msg').textContent=t('match.enter_both');return;}
-  boards.home.ip=h;boards.away.ip=a;
-  localStorage.setItem('gol-match',JSON.stringify({home:h,away:a}));
+  boards.home.ip=h;boards.away.ip=a;boards.placar.ip=p;
+  localStorage.setItem('gol-match',JSON.stringify({home:h,away:a,placar:p}));
   $('config').style.display='none';
   $('scoreboard').style.display='block';
   $('feeds').style.display='flex';
@@ -400,8 +408,22 @@ function connect(){
 }
 
 async function poll(){
-  await Promise.allSettled([pollBoard('home'),pollBoard('away')]);
+  await Promise.allSettled([pollBoard('home'),pollBoard('away'),pollPlacar()]);
   updateControls();
+}
+
+async function pollPlacar(){
+  const p=boards.placar;
+  if(!p.ip){$('placar-status').textContent=t('match.placar_none');return;}
+  try{
+    const r=await fetch('http://'+p.ip+'/status',{signal:AbortSignal.timeout(1500)});
+    const d=await r.json();
+    p.online=true;p.a=d.a||0;p.b=d.b||0;
+    $('placar-status').textContent=t('match.placar_ok',p.a,p.b);
+  }catch(e){
+    p.online=false;
+    $('placar-status').textContent=t('match.placar_off');
+  }
 }
 
 async function pollBoard(side){

@@ -13,6 +13,7 @@ if os.path.exists(env_file):
             key, val = line.split("=", 1)
             key, val = key.strip(), val.strip()
             if key in ("WIFI_SSID", "WIFI_PASSWORD", "WIFI_STATIC_IP", "WIFI_GATEWAY", "WIFI_SUBNET",
-                       "BOARD_ROLE", "PEER_IP", "SCOREBOARD_IP", "SCOREBOARD_SIDE",
+                       "BOARD_ROLE", "PEER_IP", "CAMERA_IP",
+                       "SCOREBOARD_IP", "SCOREBOARD_SIDE",
                        "SCOREBOARD_STATIC_IP", "SCOREBOARD_GATEWAY", "SCOREBOARD_SUBNET"):
                 env.Append(CPPDEFINES=[(key, env.StringifyMacro(val))])
