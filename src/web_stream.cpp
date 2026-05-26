@@ -51,6 +51,7 @@ extern volatile int autotuneBestCon, autotuneBestBri, autotuneBestSharp, autotun
 extern volatile int curCamGain, curCamGceil, curCamAec, curCamGma, curCamLenc;
 extern volatile int curCamCon, curCamBri, curCamSharp;
 extern volatile int diceBboxX, diceBboxY, diceBboxW, diceBboxH;
+extern volatile int motionThreshold, calMotionFloor, lastMotion;
 extern void requestStart();
 extern void requestPause();
 extern void requestResume();
@@ -128,6 +129,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"curGain\":%d,\"curGceil\":%d,\"curAec\":%d,\"curGma\":%d,\"curLenc\":%d,"
         "\"curCon\":%d,\"curBri\":%d,\"curSharp\":%d,"
         "\"scoreboardIp\":\"%s\","
+        "\"motionTh\":%d,\"motion\":%d,\"calMotion\":%d,"
         "\"heap\":%u,\"heapMin\":%u,\"psram\":%u,\"psramMin\":%u,\"uptime\":%u}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
@@ -149,6 +151,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         (int)curCamGain, (int)curCamGceil, (int)curCamAec, (int)curCamGma, (int)curCamLenc,
         (int)curCamCon, (int)curCamBri, (int)curCamSharp,
         scoreboardIp,
+        (int)motionThreshold, (int)lastMotion, (int)calMotionFloor,
         (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
         (unsigned)ESP.getFreePsram(), (unsigned)ESP.getMinFreePsram(),
         (unsigned)(millis() / 1000));

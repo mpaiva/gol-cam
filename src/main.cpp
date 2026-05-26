@@ -70,9 +70,22 @@ volatile int calContrastMin = 0;   // Sobel gradient threshold (0 = not calibrat
 volatile int calPixelCount = 0;    // Edge pixel count of dadinho
 volatile int calBboxW = 0, calBboxH = 0;
 
+// Frame-differencing trigger — catches fast-moving balls the edge detector
+// misses by counting pixels in the ROI whose raw luma changed > MOTION_PIXEL_DELTA
+// vs. the previous frame. Calibrated against the quiet-scene noise floor.
+#define MOTION_PIXEL_DELTA 30
+uint8_t* prevFrame = nullptr;            // PSRAM copy of last raw luma frame
+volatile bool prevFrameValid = false;
+volatile int motionThreshold = 0;        // 0 = uncalibrated / disabled
+volatile int calMotionFloor = 0;         // peak noise motion count observed during cal
+volatile int lastMotion = 0;             // live motion count for diagnostics
+
 // Detection params
 #define COOLDOWN_MS 10000
 #define STABLE_FRAMES_NEEDED 1
+// During PLAYING, only encode 1 in PLAY_STREAM_SKIP frames to leave CPU for the
+// detection loop (JPEG dominates the per-frame cost). A goal-frame always encodes.
+#define PLAY_STREAM_SKIP 3
 
 // ROI offset and size for digital pan/resize (adjusted via /roi endpoint).
 // Default + auto-tune lock: 304×160 centered (matches a typical button-soccer
@@ -386,6 +399,11 @@ void setup() {
         Serial.println("WARN: goal snapshot alloc failed");
     }
 
+    // Previous-frame buffer for the motion-difference trigger. QVGA grayscale
+    // = 76 800 B; sits in PSRAM. If alloc fails the motion path stays disabled.
+    prevFrame = (uint8_t*)ps_malloc(320 * 240);
+    if (!prevFrame) Serial.println("WARN: prevFrame alloc failed — motion trigger disabled");
+
     if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_GRAYSCALE)) {
         Serial.println("FATAL: Camera init failed!");
         while (true) delay(1000);
@@ -613,6 +631,53 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
 
     Serial.printf("[cal] SUCCESS! Edge threshold=%d, %d edges, bbox=%dx%d\n",
         calContrastMin, calPixelCount, calBboxW, calBboxH);
+
+    // Sample the quiet-scene motion floor inside the ROI so the
+    // frame-differencing trigger has a sensible threshold. Counts pixels with
+    // |Δluma| > MOTION_PIXEL_DELTA between consecutive frames; we keep the
+    // peak across 6 samples (worst-case noise) and scale it by 4x + slack.
+    if (prevFrame && fb->format == PIXFORMAT_GRAYSCALE) {
+        memcpy(prevFrame, fb->buf, (size_t)DETECT_W * DETECT_H);
+        prevFrameValid = true;
+        int noisePeak = 0;
+        for (int i = 0; i < 6; i++) {
+            delay(50);
+            camera_fb_t* f = esp_camera_fb_get();
+            if (!f) continue;
+            if (f->format != PIXFORMAT_GRAYSCALE || f->len < (size_t)(DETECT_W * DETECT_H)) {
+                esp_camera_fb_return(f);
+                continue;
+            }
+            int mc = 0;
+            for (int y = ry; y < ry + rh; y++) {
+                const uint8_t* a = (const uint8_t*)f->buf + y * DETECT_W + rx;
+                const uint8_t* b = (const uint8_t*)prevFrame + y * DETECT_W + rx;
+                for (int x = 0; x < rw; x++) {
+                    int d = (int)a[x] - (int)b[x];
+                    if (d < 0) d = -d;
+                    if (d > MOTION_PIXEL_DELTA) mc++;
+                }
+            }
+            if (mc > noisePeak) noisePeak = mc;
+            memcpy(prevFrame, f->buf, (size_t)DETECT_W * DETECT_H);
+            esp_camera_fb_return(f);
+        }
+        calMotionFloor = noisePeak;
+        int roiPx = rw * rh;
+        // 4x peak noise + small per-ROI slack so a quiet scene + jitter still
+        // sits well below trigger. Caps at roiPx/2 (anything more is a hand
+        // sweep, not a ball).
+        int slack = roiPx / 200; if (slack < 50) slack = 50;
+        int t = noisePeak * 4 + slack;
+        int cap = roiPx / 2;
+        if (t > cap) t = cap;
+        motionThreshold = t;
+        Serial.printf("[cal] motion floor=%d → threshold=%d (roi %d px)\n",
+            calMotionFloor, (int)motionThreshold, roiPx);
+        size_t fbLen = strlen(calFeedback);
+        snprintf(calFeedback + fbLen, sizeof(calFeedback) - fbLen,
+            " Motion: floor=%d, trigger>=%d.", calMotionFloor, (int)motionThreshold);
+    }
 
     // Flash LED to confirm
     digitalWrite(LED_PIN, HIGH);
@@ -879,8 +944,14 @@ void loop() {
     computeROI(rx, ry, rw, rh);
 
     // Not playing: stream the binarized grayscale frame (no overlays — those
-    // are drawn client-side as SVG over the <img>).
+    // are drawn client-side as SVG over the <img>). Update prevFrame from raw
+    // luma BEFORE binarisation so motion detection has a fresh reference when
+    // play starts.
     if ((gameState != STATE_PLAYING) || calContrastMin <= 0) {
+        if (prevFrame) {
+            memcpy(prevFrame, fb->buf, (size_t)DETECT_W * DETECT_H);
+            prevFrameValid = true;
+        }
         applyThreshold(pixels, DETECT_W, DETECT_H, contrastThreshold);
         diceBboxX = -1;
         uint8_t* jpg_buf = NULL;
@@ -952,6 +1023,31 @@ void loop() {
     else if (density < 0.12f) lastRejectReason = "SPARSE";
     else lastRejectReason = "REJECTED";
 
+    // Frame-differencing trigger — counts pixels in the ROI whose raw luma
+    // changed by more than MOTION_PIXEL_DELTA vs. the previous frame. This
+    // catches a ball that flashes through the ROI in 1-2 frames (too brief
+    // for the edge detector + bbox filter to lock onto). Must run BEFORE
+    // applyThreshold while pixels still holds raw luma.
+    int motionCount = 0;
+    if (prevFrame && prevFrameValid && motionThreshold > 0) {
+        for (int y = ry; y < ry + rh; y++) {
+            const uint8_t* a = pixels + y * DETECT_W + rx;
+            const uint8_t* b = prevFrame + y * DETECT_W + rx;
+            for (int x = 0; x < rw; x++) {
+                int d = (int)a[x] - (int)b[x];
+                if (d < 0) d = -d;
+                if (d > MOTION_PIXEL_DELTA) motionCount++;
+            }
+        }
+    }
+    lastMotion = motionCount;
+
+    // Snapshot raw luma into prevFrame BEFORE applyThreshold corrupts it.
+    if (prevFrame) {
+        memcpy(prevFrame, pixels, (size_t)DETECT_W * DETECT_H);
+        prevFrameValid = true;
+    }
+
     // Apply post-threshold to the grayscale buffer (used for the visualization)
     applyThreshold(pixels, DETECT_W, DETECT_H, contrastThreshold);
 
@@ -959,7 +1055,9 @@ void loop() {
     detector.lastChangeRatio = (float)matchCount / (rw * rh);
     detector.frameCount = frameNum;
     bool inCooldown = (now - lastGoalTimeMs) < COOLDOWN_MS;
-    bool isGoal = diceDetected && !diceWasPresent && !inCooldown && noDiceFrames >= STABLE_FRAMES_NEEDED;
+    bool edgeTrigger = diceDetected && !diceWasPresent && noDiceFrames >= STABLE_FRAMES_NEEDED;
+    bool motionTrigger = (motionThreshold > 0) && (motionCount > motionThreshold);
+    bool isGoal = !inCooldown && (edgeTrigger || motionTrigger);
 
     // Publish dadinho bbox so the dashboard SVG overlay can draw it in green
     if (matchCount > 0 && diceDetected) {
@@ -969,8 +1067,11 @@ void loop() {
         diceBboxX = -1;
     }
 
-    // Encode the (binarized) grayscale frame — overlays drawn client-side
-    {
+    // Encode the (binarized) grayscale frame — overlays drawn client-side.
+    // JPEG encoding dominates per-frame CPU; we encode 1-in-PLAY_STREAM_SKIP
+    // frames during play (and always on a goal) so detection runs ~2x faster.
+    bool shouldEncode = (frameNum % PLAY_STREAM_SKIP == 0) || isGoal;
+    if (shouldEncode) {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
         if (frame2jpg(fb, 70, &jpg_buf, &jpg_len)) {
@@ -990,7 +1091,7 @@ void loop() {
     esp_camera_fb_return(fb);
 
     static uint32_t lastDetectLog = 0;
-    if (matchCount > 0 && (now - lastDetectLog >= 500)) {
+    if ((matchCount > 0 || motionCount > motionThreshold / 2) && (now - lastDetectLog >= 500)) {
         const char* reason = "";
         if (!diceDetected) {
             if ((int)matchCount > maxPixels) reason = " TOO-BIG";
@@ -998,10 +1099,12 @@ void loop() {
             else if ((int)matchCount < minPixels) reason = " TOO-SMALL";
             else if (density < 0.12f) reason = " SPARSE";
         }
-        Serial.printf("[detect] %d edges bbox=%dx%d dens=%.0f%% (lim:%d-%d bbox<=%d)%s%s%s\n",
+        Serial.printf("[detect] %d edges bbox=%dx%d dens=%.0f%% motion=%d/%d (lim:%d-%d bbox<=%d)%s%s%s%s\n",
             matchCount, bboxW, bboxH, density * 100,
+            motionCount, (int)motionThreshold,
             minPixels, maxPixels, maxBbox,
             diceDetected ? " DICE!" : reason,
+            motionTrigger ? " MOTION!" : "",
             inCooldown ? " (cd)" : "",
             !diceWasPresent ? "" : " (seen)");
         lastDetectLog = now;
@@ -1024,8 +1127,11 @@ void loop() {
         delay(300);
         digitalWrite(LED_PIN, LOW);
 
-        Serial.printf("GOAL #%d! (%d edges, threshold>=%d)\n",
-            detector.goalCount, matchCount, (int)calContrastMin);
+        const char* trigSrc = motionTrigger ? (edgeTrigger ? "edge+motion" : "motion")
+                                            : "edge";
+        Serial.printf("GOAL #%d! (%d edges, %d motion, src=%s, threshold edge>=%d motion>=%d)\n",
+            detector.goalCount, matchCount, motionCount, trigSrc,
+            (int)calContrastMin, (int)motionThreshold);
     }
 
     if (diceDetected) {

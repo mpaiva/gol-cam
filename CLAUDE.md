@@ -77,7 +77,12 @@ SCOREBOARD_IP=192.168.0.110     # placar IP (camera pushes here)
 - `STATE_IDLE` → `STATE_CALIBRATING` → `STATE_IDLE` (calibration stores edge signature)
 - `STATE_IDLE` → `STATE_PLAYING` ↔ `STATE_PAUSED` → `STATE_IDLE`
 
-**Detection pipeline** (in `loop()`): captures grayscale frames at QVGA (320×240). During calibration, finds the most distinct object vs. background edges (Sobel gradient). During play, counts edge pixels matching calibrated threshold within ROI, applies size/density filters, triggers goal on dadinho-appears-after-absence with 10 s cooldown.
+**Detection pipeline** (in `loop()`): captures grayscale frames at QVGA (320×240). During calibration, finds the most distinct object vs. background edges (Sobel gradient), then samples the per-pixel motion floor over 6 quiet frames to derive `motionThreshold`. During play two triggers run in parallel and OR into the goal decision (gated by the shared 10 s cooldown):
+
+1. **Edge trigger** — counts edge pixels matching the calibrated Sobel threshold within ROI, applies size/density filters, fires on dadinho-appears-after-absence.
+2. **Motion trigger** — counts pixels in the ROI whose raw luma changed by `> 30` (`MOTION_PIXEL_DELTA`) vs. the previous frame; fires when that count exceeds the calibrated `motionThreshold`. Catches fast balls that flash through the ROI in 1-2 frames (too brief for the edge bbox filter to lock on).
+
+To free CPU for both triggers, JPEG encoding is throttled to 1-in-`PLAY_STREAM_SKIP` (= 3) frames during PLAYING, except a goal-frame which always encodes so `/goal-snapshot` stays accurate. Live stream drops to ~4 fps; detection roughly doubles.
 
 **Side effects on goal:**
 1. `playGoalSound()` notifies a persistent FreeRTOS task that installs the I2S driver, plays one of three audio clips (Brasil/Flamengo/Vasco), then uninstalls to keep the amp silent.
