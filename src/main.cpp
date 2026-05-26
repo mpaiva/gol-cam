@@ -247,7 +247,7 @@ void playGoalSound() {
 //   home camera → opponent (away) scores → side B
 //   away camera → home scores            → side A
 //   single camera (no role)              → side A
-static char scoreboardSide = 'a';
+char scoreboardSide = 'a';
 
 static void resolveScoreboardSide() {
 #ifdef SCOREBOARD_SIDE

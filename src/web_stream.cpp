@@ -110,9 +110,9 @@ static esp_err_t status_handler(httpd_req_t *req) {
 #ifdef SCOREBOARD_IP
     scoreboardIp = SCOREBOARD_IP;
 #endif
-    // Derive side from BOARD_ROLE so the scoreboard knows which counter to increment.
-    // BOARD_ROLE=goal_b → "B"; everything else (goal_a, single, unset) → "A".
-    const char* side = (strstr(role, "_b") != NULL || strstr(role, "_B") != NULL) ? "B" : "A";
+    // Resolved at boot in main.cpp::resolveScoreboardSide() (SCOREBOARD_SIDE > BOARD_ROLE > 'a').
+    extern char scoreboardSide;
+    const char* side = (scoreboardSide == 'b') ? "B" : "A";
     snprintf(buf, sizeof(buf),
         "{\"goals\":%d,\"fps\":%d,\"change\":%.2f,\"frames\":%d,\"scored\":%s,"
         "\"state\":%d,\"calibrated\":%s,\"calContrast\":%d,"
