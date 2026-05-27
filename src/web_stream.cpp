@@ -124,7 +124,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"calPx\":%d,\"calW\":%d,\"calH\":%d,"
         "\"matchPx\":%d,\"bboxW\":%d,\"bboxH\":%d,\"density\":%.0f,"
         "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\","
-        "\"calMsg\":\"%s\",\"hasSnap\":%s,\"hasSnapPrev\":%s,\"goalSeq\":%d,\"cdRemain\":%d,"
+        "\"calMsg\":\"%s\",\"hasCalSnap\":%s,\"hasGoalSnap\":%s,\"hasSnapPrev\":%s,\"goalSeq\":%d,\"cdRemain\":%d,"
         "\"role\":\"%s\",\"side\":\"%s\",\"peer\":\"%s\",\"roiX\":%d,\"roiY\":%d,\"roiW\":%d,\"roiH\":%d,"
         "\"diceX\":%d,\"diceY\":%d,\"diceW\":%d,\"diceH\":%d,"
         "\"autoStage\":%d,\"autoStep\":%d,\"autoTotal\":%d,\"autoScore\":%d,\"autoDone\":%d,"
@@ -145,6 +145,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         lastRejectReason ? lastRejectReason : "",
         calFeedback,
         calSnapshotLen > 0 ? "true" : "false",
+        goalSnapshotLen > 0 ? "true" : "false",
         goalSnapshotPrevLen > 0 ? "true" : "false",
         (int)goalSnapshotSeq, cdRemain,
         role, side, peer, (int)roiOffsetX, (int)roiOffsetY, (int)roiW, (int)roiH,

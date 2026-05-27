@@ -410,7 +410,7 @@ try{const r=await fetch('/status');const d=await r.json();
 if(d.calMsg){
 $('cal-feedback').textContent=d.calMsg;
 $('cal-feedback').className=d.calibrated?'cal-ok':'cal-fail';}
-if(d.hasSnap){
+if(d.hasCalSnap){
 $('cal-snap').src='/cal-snapshot?t='+Date.now();
 $('cal-snap').style.display='block';}
 }catch(e){}
