@@ -1044,6 +1044,34 @@ void loop() {
     }
     lastMotion = motionCount;
 
+    // Compute the goal decision NOW (before applyThreshold) so we can encode
+    // the VAR snapshot from the raw, human-readable luma frame. The stream
+    // still gets the binarised version below for detection-state visualisation.
+    detector.lastChangeRatio = (float)matchCount / (rw * rh);
+    detector.frameCount = frameNum;
+    bool inCooldown = (now - lastGoalTimeMs) < COOLDOWN_MS;
+    bool edgeTrigger = diceDetected && !diceWasPresent && noDiceFrames >= STABLE_FRAMES_NEEDED;
+    bool motionTrigger = (motionThreshold > 0) && (motionCount > motionThreshold);
+    bool isGoal = !inCooldown && (edgeTrigger || motionTrigger);
+
+    // VAR snapshot — encode the RAW grayscale frame at quality 80 so the
+    // reviewer sees the actual scene rather than the threshold-binarised
+    // black/white version. Encoded here, before applyThreshold().
+    if (isGoal && goalSnapshotBuf && goalSnapshotMutex) {
+        uint8_t* var_jpg = NULL;
+        size_t var_len = 0;
+        if (frame2jpg(fb, 80, &var_jpg, &var_len)) {
+            xSemaphoreTake(goalSnapshotMutex, portMAX_DELAY);
+            if (var_len <= 64 * 1024) {
+                memcpy(goalSnapshotBuf, var_jpg, var_len);
+                goalSnapshotLen = var_len;
+                goalSnapshotSeq++;
+            }
+            xSemaphoreGive(goalSnapshotMutex);
+            free(var_jpg);
+        }
+    }
+
     // Snapshot raw luma into prevFrame BEFORE applyThreshold corrupts it.
     if (prevFrame) {
         memcpy(prevFrame, pixels, (size_t)DETECT_W * DETECT_H);
@@ -1053,14 +1081,6 @@ void loop() {
     // Apply post-threshold to the grayscale buffer (used for the visualization)
     applyThreshold(pixels, DETECT_W, DETECT_H, contrastThreshold);
 
-    // Check goal
-    detector.lastChangeRatio = (float)matchCount / (rw * rh);
-    detector.frameCount = frameNum;
-    bool inCooldown = (now - lastGoalTimeMs) < COOLDOWN_MS;
-    bool edgeTrigger = diceDetected && !diceWasPresent && noDiceFrames >= STABLE_FRAMES_NEEDED;
-    bool motionTrigger = (motionThreshold > 0) && (motionCount > motionThreshold);
-    bool isGoal = !inCooldown && (edgeTrigger || motionTrigger);
-
     // Publish dadinho bbox so the dashboard SVG overlay can draw it in green
     if (matchCount > 0 && diceDetected) {
         diceBboxX = minX; diceBboxY = minY;
@@ -1069,24 +1089,16 @@ void loop() {
         diceBboxX = -1;
     }
 
-    // Encode the (binarized) grayscale frame — overlays drawn client-side.
-    // JPEG encoding dominates per-frame CPU; we encode 1-in-playStreamSkip
-    // frames during play (and always on a goal) so detection runs ~2x faster.
+    // Encode the (binarized) grayscale frame for the live stream — overlays
+    // drawn client-side. JPEG encoding dominates per-frame CPU so we encode
+    // 1-in-playStreamSkip frames during play (always on a goal so the dashboard
+    // sees the goal moment even if it falls between regular stream frames).
     bool shouldEncode = (playStreamSkip <= 1) || (frameNum % playStreamSkip == 0) || isGoal;
     if (shouldEncode) {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
         if (frame2jpg(fb, 70, &jpg_buf, &jpg_len)) {
             frameStore.update(jpg_buf, jpg_len);
-            if (isGoal && goalSnapshotBuf && goalSnapshotMutex) {
-                xSemaphoreTake(goalSnapshotMutex, portMAX_DELAY);
-                if (jpg_len <= 64 * 1024) {
-                    memcpy(goalSnapshotBuf, jpg_buf, jpg_len);
-                    goalSnapshotLen = jpg_len;
-                    goalSnapshotSeq++;
-                }
-                xSemaphoreGive(goalSnapshotMutex);
-            }
             free(jpg_buf);
         }
     }
