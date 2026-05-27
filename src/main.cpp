@@ -326,6 +326,15 @@ void requestCalibration() {
     Serial.println("[cal] Calibration requested");
 }
 
+// Set by /test-fire; drained by loop() at the top of the next iteration so the
+// VAR snapshot captures a fresh fb. Bypasses cooldown/calibration — for end-to-end
+// dashboard validation without a physical ball.
+volatile bool pendingTestFire = false;
+void requestTestFire() {
+    pendingTestFire = true;
+    Serial.println("[test] /test-fire requested");
+}
+
 void requestAutotune() {
     if (gameState != STATE_IDLE) return;
     autotuneStage = 0;
@@ -934,6 +943,53 @@ void loop() {
     }
 
     uint8_t* pixels = fb->buf;
+
+    // Test-fire: simulates a real goal without the detection pipeline so the
+    // dashboard can be validated end-to-end (VAR lightbox + scoreboard push +
+    // audio celebration) without a physical ball. Bypasses cooldown and
+    // calibration. Captures current fb + prevFrame as the two VAR snapshots.
+    if (pendingTestFire) {
+        pendingTestFire = false;
+
+        if (goalSnapshotBuf && goalSnapshotPrevBuf && goalSnapshotMutex) {
+            uint8_t* var_jpg = NULL;  size_t var_len = 0;
+            bool curOk = frame2jpg(fb, 80, &var_jpg, &var_len);
+
+            uint8_t* prev_jpg = NULL; size_t prev_len = 0;
+            bool prevOk = false;
+            if (prevFrame && prevFrameValid) {
+                prevOk = fmt2jpg(prevFrame, (size_t)DETECT_W * DETECT_H,
+                                 DETECT_W, DETECT_H, PIXFORMAT_GRAYSCALE, 80,
+                                 &prev_jpg, &prev_len);
+            }
+            xSemaphoreTake(goalSnapshotMutex, portMAX_DELAY);
+            if (curOk && var_len <= 64 * 1024) {
+                memcpy(goalSnapshotBuf, var_jpg, var_len);
+                goalSnapshotLen = var_len;
+            }
+            if (prevOk && prev_len <= 64 * 1024) {
+                memcpy(goalSnapshotPrevBuf, prev_jpg, prev_len);
+                goalSnapshotPrevLen = prev_len;
+            } else {
+                goalSnapshotPrevLen = 0;
+            }
+            if (curOk) goalSnapshotSeq++;
+            xSemaphoreGive(goalSnapshotMutex);
+            if (var_jpg)  free(var_jpg);
+            if (prev_jpg) free(prev_jpg);
+        }
+
+        lastGoalTimeMs = now;
+        detector.goalCount++;
+        goalJustScored = true;
+        playGoalSound();
+        pushGoalToScoreboard();
+        digitalWrite(LED_PIN, HIGH); delay(300); digitalWrite(LED_PIN, LOW);
+        Serial.printf("[test] GOAL #%d via /test-fire (side=%c)\n",
+                      detector.goalCount, scoreboardSide);
+        esp_camera_fb_return(fb);
+        return;
+    }
 
     // Handle calibration
     if (gameState == STATE_CALIBRATING) {

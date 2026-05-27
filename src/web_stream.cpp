@@ -42,6 +42,7 @@ extern volatile uint32_t lastGoalTimeMs;
 // Actions (defined in main.cpp)
 extern void requestCalibration();
 extern void requestAutotune();
+extern void requestTestFire();
 extern volatile int contrastThreshold;
 extern volatile int speakerVolume;
 extern void playGoalSound();
@@ -416,6 +417,17 @@ static esp_err_t test_goal_handler(httpd_req_t *req) {
     return httpd_resp_send(req, "{\"ok\":true}", 11);
 }
 
+// /test-fire simulates a full goal locally — captures VAR snapshots, plays
+// celebration audio, pushes to the scoreboard, bumps goalCount. Bypasses
+// cooldown so it fires every time. Use to validate the dashboard pipeline
+// without a physical ball.
+static esp_err_t test_fire_handler(httpd_req_t *req) {
+    requestTestFire();
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, "{\"ok\":true}", 11);
+}
+
 static esp_err_t volume_handler(httpd_req_t *req) {
     char buf[32];
     if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
@@ -538,7 +550,7 @@ void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_uri_handlers = 26;
+    config.max_uri_handlers = 27;
     config.max_open_sockets = 10;
     config.lru_purge_enable = true;
     config.stack_size = 8192;
@@ -563,6 +575,7 @@ void startCameraServer() {
         httpd_uri_t cam_uri = { .uri = "/cam", .method = HTTP_GET, .handler = cam_handler };
         httpd_uri_t test_sound_uri = { .uri = "/test-sound", .method = HTTP_GET, .handler = test_sound_handler };
         httpd_uri_t test_goal_uri  = { .uri = "/test-goal",  .method = HTTP_GET, .handler = test_goal_handler };
+        httpd_uri_t test_fire_uri  = { .uri = "/test-fire",  .method = HTTP_GET, .handler = test_fire_handler };
         httpd_uri_t volume_uri = { .uri = "/volume", .method = HTTP_GET, .handler = volume_handler };
         httpd_uri_t led_uri = { .uri = "/led", .method = HTTP_GET, .handler = led_handler };
         httpd_uri_t threshold_uri = { .uri = "/threshold", .method = HTTP_GET, .handler = threshold_handler };
@@ -588,6 +601,7 @@ void startCameraServer() {
         httpd_register_uri_handler(server, &cam_uri);
         httpd_register_uri_handler(server, &test_sound_uri);
         httpd_register_uri_handler(server, &test_goal_uri);
+        httpd_register_uri_handler(server, &test_fire_uri);
         httpd_register_uri_handler(server, &volume_uri);
         httpd_register_uri_handler(server, &led_uri);
         httpd_register_uri_handler(server, &threshold_uri);
