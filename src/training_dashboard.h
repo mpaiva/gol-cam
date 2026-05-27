@@ -109,8 +109,13 @@ pointer-events:none;text-shadow:0 0 30px #0f0;z-index:51}
 .active{opacity:1 !important}
 #lightbox{position:fixed;inset:0;background:rgba(0,0,0,0.92);
 display:none;flex-direction:column;justify-content:center;align-items:center;z-index:100;padding:16px}
-#lightbox img{max-width:95%;max-height:65%;border:3px solid var(--green);border-radius:8px}
+#lightbox img{max-width:100%;max-height:60vh;border:3px solid var(--green);border-radius:8px;display:block}
 #lb-title{color:#fff;font-size:1.3em;font-weight:bold;margin:10px 0}
+#lb-frames{display:flex;flex-wrap:wrap;gap:10px;justify-content:center;align-items:flex-start;width:100%;max-width:920px}
+.lb-frame{display:flex;flex-direction:column;align-items:center;gap:4px;max-width:48%;flex:1 1 320px}
+.lb-frame .lb-label{color:var(--muted);font-size:0.78em;letter-spacing:1px;text-transform:uppercase}
+.lb-frame.trigger .lb-label{color:var(--green)}
+.lb-frame.before  .lb-label{color:var(--orange)}
 #lb-buttons{display:none;gap:14px;margin:12px 0}
 .btn-foi{background:var(--green);color:#fff;padding:14px 28px;font-size:1.1em;
 border:none;border-radius:10px;cursor:pointer;font-weight:bold}
@@ -129,7 +134,16 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <div id='gol-text' data-i18n='goal.flash'>GOOOL!</div>
 <div id='lightbox'>
 <div id='lb-title'></div>
+<div id='lb-frames'>
+<div class='lb-frame before' id='lb-frame-prev'>
+<div class='lb-label' data-i18n='var.before'>Before</div>
+<img id='lb-img-prev'/>
+</div>
+<div class='lb-frame trigger'>
+<div class='lb-label' data-i18n='var.trigger'>Trigger</div>
 <img id='lb-img'/>
+</div>
+</div>
 <div id='lb-buttons'>
 <button class='btn-foi' onclick='varConfirm()' data-i18n='var.confirm'>Foi Gol</button>
 <button class='btn-anula' onclick='varAnula()' data-i18n='var.annul'>Anula</button>
@@ -232,6 +246,8 @@ en:{
 'var.confirm':'Foi Gol',
 'var.annul':'Annul',
 'var.annulled':'ANNULLED',
+'var.before':'Before',
+'var.trigger':'Trigger',
 'train.calibrate':'\u{1F3AF} Calibrate',
 'train.calibrating':'Calibrating...',
 'train.analyzing':'Analyzing frame...',
@@ -265,6 +281,8 @@ pt:{
 'var.confirm':'Foi Gol',
 'var.annul':'Anula',
 'var.annulled':'ANULADO',
+'var.before':'Antes',
+'var.trigger':'Disparo',
 'train.calibrate':'\u{1F3AF} Calibrar',
 'train.calibrating':'Calibrando...',
 'train.analyzing':'Analisando frame...',
@@ -324,15 +342,22 @@ con.appendChild(d);
 if(con.children.length>100)con.removeChild(con.firstChild);
 con.scrollTop=con.scrollHeight;}
 let varEntry=null,varBtn=null;
-function showLightbox(src){
+function setLbImages(triggerSrc,prevSrc){
+$('lb-img').src=triggerSrc||'';
+const pf=$('lb-frame-prev');
+if(prevSrc){$('lb-img-prev').src=prevSrc;pf.style.display='';}
+else{$('lb-img-prev').removeAttribute('src');pf.style.display='none';}}
+function showLightbox(triggerSrc,prevSrc){
 varEntry=null;varBtn=null;
-$('lb-img').src=src;$('lb-title').textContent='';
+setLbImages(triggerSrc,prevSrc);
+$('lb-title').textContent='';
 $('lb-buttons').style.display='none';
 $('lightbox').style.display='flex';
 $('lightbox').onclick=function(){this.style.display='none';};}
-function showVAR(src,entry,btn){
+function showVAR(triggerSrc,prevSrc,entry,btn){
 varEntry=entry;varBtn=btn;
-$('lb-img').src=src;$('lb-title').textContent=t('var.title');
+setLbImages(triggerSrc,prevSrc);
+$('lb-title').textContent=t('var.title');
 $('lb-buttons').style.display='flex';
 $('lightbox').style.display='flex';
 $('lightbox').onclick=null;}
@@ -504,9 +529,12 @@ lastGolSeq=d.goalSeq;
 $('gol-flash').classList.add('active');$('gol-text').classList.add('active');
 setTimeout(()=>{$('gol-flash').classList.remove('active');
 $('gol-text').classList.remove('active')},2000);
-const snapUrl='/goal-snapshot?t='+Date.now();
+const stamp=Date.now();
+const snapUrl='/goal-snapshot?t='+stamp;
+const prevUrl=d.hasSnapPrev?('/goal-snapshot-prev?t='+stamp):'';
 const e=document.createElement('div');e.className='gol-entry';
-e.onclick=function(){showLightbox(this.querySelector('img').src);};
+e.dataset.prevUrl=prevUrl;
+e.onclick=function(){showLightbox(this.querySelector('img').src,this.dataset.prevUrl||'');};
 const img=document.createElement('img');
 img.src=snapUrl;
 const info=document.createElement('div');info.className='gol-info';
@@ -519,7 +547,7 @@ const vb=document.createElement('button');vb.className='btn-var';
 vb.textContent='VAR';
 vb.onclick=function(ev){ev.stopPropagation();
 if(this.disabled)return;
-showVAR(img.src,e,this);return false;};
+showVAR(img.src,e.dataset.prevUrl||'',e,this);return false;};
 e.appendChild(img);e.appendChild(info);e.appendChild(vb);
 glog.insertBefore(e,glog.firstChild);}
 }catch(e){$('info').textContent=t('train.disconnected');}},500);

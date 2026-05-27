@@ -33,6 +33,8 @@ extern char calFeedback[];
 // Goal snapshot (defined in main.cpp)
 extern uint8_t* goalSnapshotBuf;
 extern size_t goalSnapshotLen;
+extern uint8_t* goalSnapshotPrevBuf;
+extern size_t goalSnapshotPrevLen;
 extern SemaphoreHandle_t goalSnapshotMutex;
 extern volatile uint32_t goalSnapshotSeq;
 extern volatile uint32_t lastGoalTimeMs;
@@ -121,7 +123,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"calPx\":%d,\"calW\":%d,\"calH\":%d,"
         "\"matchPx\":%d,\"bboxW\":%d,\"bboxH\":%d,\"density\":%.0f,"
         "\"minPx\":%d,\"maxPx\":%d,\"maxBbox\":%d,\"reject\":\"%s\","
-        "\"calMsg\":\"%s\",\"hasSnap\":%s,\"goalSeq\":%d,\"cdRemain\":%d,"
+        "\"calMsg\":\"%s\",\"hasSnap\":%s,\"hasSnapPrev\":%s,\"goalSeq\":%d,\"cdRemain\":%d,"
         "\"role\":\"%s\",\"side\":\"%s\",\"peer\":\"%s\",\"roiX\":%d,\"roiY\":%d,\"roiW\":%d,\"roiH\":%d,"
         "\"diceX\":%d,\"diceY\":%d,\"diceW\":%d,\"diceH\":%d,"
         "\"autoStage\":%d,\"autoStep\":%d,\"autoTotal\":%d,\"autoScore\":%d,\"autoDone\":%d,"
@@ -142,6 +144,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         lastRejectReason ? lastRejectReason : "",
         calFeedback,
         calSnapshotLen > 0 ? "true" : "false",
+        goalSnapshotPrevLen > 0 ? "true" : "false",
         (int)goalSnapshotSeq, cdRemain,
         role, side, peer, (int)roiOffsetX, (int)roiOffsetY, (int)roiW, (int)roiH,
         (int)diceBboxX, (int)diceBboxY, (int)diceBboxW, (int)diceBboxH,
@@ -186,6 +189,24 @@ static esp_err_t goal_snapshot_handler(httpd_req_t *req) {
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
     esp_err_t res = httpd_resp_send(req, (const char*)goalSnapshotBuf, goalSnapshotLen);
+    xSemaphoreGive(goalSnapshotMutex);
+    return res;
+}
+
+// Companion endpoint to /goal-snapshot — serves the frame one earlier than the
+// trigger, so VAR review can see the ball that was actually in flight when a
+// fast motion-triggered goal fired. Falls back to 404 when no prev exists
+// (very first goal after boot / calibrate / reset).
+static esp_err_t goal_snapshot_prev_handler(httpd_req_t *req) {
+    if (!goalSnapshotPrevBuf || !goalSnapshotMutex || goalSnapshotPrevLen == 0) {
+        httpd_resp_send_404(req);
+        return ESP_OK;
+    }
+    xSemaphoreTake(goalSnapshotMutex, portMAX_DELAY);
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    esp_err_t res = httpd_resp_send(req, (const char*)goalSnapshotPrevBuf, goalSnapshotPrevLen);
     xSemaphoreGive(goalSnapshotMutex);
     return res;
 }
@@ -517,7 +538,7 @@ void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_uri_handlers = 25;
+    config.max_uri_handlers = 26;
     config.max_open_sockets = 10;
     config.lru_purge_enable = true;
     config.stack_size = 8192;
@@ -531,6 +552,7 @@ void startCameraServer() {
         httpd_uri_t cal_uri = { .uri = "/calibrate", .method = HTTP_GET, .handler = calibrate_handler };
         httpd_uri_t cal_snap_uri = { .uri = "/cal-snapshot", .method = HTTP_GET, .handler = cal_snapshot_handler };
         httpd_uri_t goal_snap_uri = { .uri = "/goal-snapshot", .method = HTTP_GET, .handler = goal_snapshot_handler };
+        httpd_uri_t goal_snap_prev_uri = { .uri = "/goal-snapshot-prev", .method = HTTP_GET, .handler = goal_snapshot_prev_handler };
         httpd_uri_t start_uri = { .uri = "/start", .method = HTTP_GET, .handler = start_handler };
         httpd_uri_t pause_uri = { .uri = "/pause", .method = HTTP_GET, .handler = pause_handler };
         httpd_uri_t resume_uri = { .uri = "/resume", .method = HTTP_GET, .handler = resume_handler };
@@ -555,6 +577,7 @@ void startCameraServer() {
         httpd_register_uri_handler(server, &cal_uri);
         httpd_register_uri_handler(server, &cal_snap_uri);
         httpd_register_uri_handler(server, &goal_snap_uri);
+        httpd_register_uri_handler(server, &goal_snap_prev_uri);
         httpd_register_uri_handler(server, &start_uri);
         httpd_register_uri_handler(server, &pause_uri);
         httpd_register_uri_handler(server, &resume_uri);

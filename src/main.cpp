@@ -119,9 +119,15 @@ size_t calSnapshotLen = 0;
 SemaphoreHandle_t calSnapshotMutex = nullptr;
 char calFeedback[256] = "";
 
-// Goal snapshot
+// Goal snapshot — pair of JPEGs captured atomically when isGoal fires:
+//   goalSnapshotBuf      = current raw frame (the moment we decided "goal")
+//   goalSnapshotPrevBuf  = previous raw frame (one frame earlier, often the
+//                          actual ball-in-flight evidence for motion triggers)
+// Both share goalSnapshotMutex and bump goalSnapshotSeq together.
 uint8_t* goalSnapshotBuf = nullptr;
 size_t goalSnapshotLen = 0;
+uint8_t* goalSnapshotPrevBuf = nullptr;
+size_t goalSnapshotPrevLen = 0;
 SemaphoreHandle_t goalSnapshotMutex = nullptr;
 volatile uint32_t goalSnapshotSeq = 0;
 volatile uint32_t lastGoalTimeMs = 0;
@@ -371,6 +377,7 @@ void requestReset() {
     goalJustScored = false;
     goalSnapshotSeq = 0;
     goalSnapshotLen = 0;
+    goalSnapshotPrevLen = 0;
     gameState = STATE_IDLE;
     Serial.println("[game] Reset — back to calibration");
 }
@@ -396,8 +403,9 @@ void setup() {
     }
 
     goalSnapshotBuf = (uint8_t*)ps_malloc(64 * 1024);
+    goalSnapshotPrevBuf = (uint8_t*)ps_malloc(64 * 1024);
     goalSnapshotMutex = xSemaphoreCreateMutex();
-    if (!goalSnapshotBuf || !goalSnapshotMutex) {
+    if (!goalSnapshotBuf || !goalSnapshotPrevBuf || !goalSnapshotMutex) {
         Serial.println("WARN: goal snapshot alloc failed");
     }
 
@@ -1054,22 +1062,46 @@ void loop() {
     bool motionTrigger = (motionThreshold > 0) && (motionCount > motionThreshold);
     bool isGoal = !inCooldown && (edgeTrigger || motionTrigger);
 
-    // VAR snapshot — encode the RAW grayscale frame at quality 80 so the
-    // reviewer sees the actual scene rather than the threshold-binarised
-    // black/white version. Encoded here, before applyThreshold().
-    if (isGoal && goalSnapshotBuf && goalSnapshotMutex) {
+    // VAR snapshots — encode TWO raw grayscale JPEGs at quality 80 when isGoal
+    // fires:
+    //   (a) current fb = "trigger frame" (what we saw when we decided to score)
+    //   (b) prevFrame  = "before" frame (one earlier; for motion triggers this
+    //                    is often where the ball was actually visible).
+    // Both must be encoded BEFORE applyThreshold() corrupts the raw luma and
+    // BEFORE the memcpy that overwrites prevFrame. Mutex held for the whole
+    // pair so the dashboard never reads a half-updated set.
+    if (isGoal && goalSnapshotBuf && goalSnapshotPrevBuf && goalSnapshotMutex) {
         uint8_t* var_jpg = NULL;
         size_t var_len = 0;
-        if (frame2jpg(fb, 80, &var_jpg, &var_len)) {
-            xSemaphoreTake(goalSnapshotMutex, portMAX_DELAY);
-            if (var_len <= 64 * 1024) {
-                memcpy(goalSnapshotBuf, var_jpg, var_len);
-                goalSnapshotLen = var_len;
-                goalSnapshotSeq++;
-            }
-            xSemaphoreGive(goalSnapshotMutex);
-            free(var_jpg);
+        bool curOk = frame2jpg(fb, 80, &var_jpg, &var_len);
+
+        uint8_t* prev_jpg = NULL;
+        size_t prev_len = 0;
+        bool prevOk = false;
+        if (prevFrame && prevFrameValid) {
+            prevOk = fmt2jpg(prevFrame, (size_t)DETECT_W * DETECT_H,
+                             DETECT_W, DETECT_H, PIXFORMAT_GRAYSCALE, 80,
+                             &prev_jpg, &prev_len);
         }
+
+        xSemaphoreTake(goalSnapshotMutex, portMAX_DELAY);
+        if (curOk && var_len <= 64 * 1024) {
+            memcpy(goalSnapshotBuf, var_jpg, var_len);
+            goalSnapshotLen = var_len;
+        }
+        if (prevOk && prev_len <= 64 * 1024) {
+            memcpy(goalSnapshotPrevBuf, prev_jpg, prev_len);
+            goalSnapshotPrevLen = prev_len;
+        } else {
+            // No prev available (first goal after calibrate/reset). Mark
+            // empty so the dashboard knows not to show it.
+            goalSnapshotPrevLen = 0;
+        }
+        if (curOk) goalSnapshotSeq++;
+        xSemaphoreGive(goalSnapshotMutex);
+
+        if (var_jpg)  free(var_jpg);
+        if (prev_jpg) free(prev_jpg);
     }
 
     // Snapshot raw luma into prevFrame BEFORE applyThreshold corrupts it.
