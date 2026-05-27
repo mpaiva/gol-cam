@@ -71,21 +71,23 @@ volatile int calPixelCount = 0;    // Edge pixel count of dadinho
 volatile int calBboxW = 0, calBboxH = 0;
 
 // Frame-differencing trigger — catches fast-moving balls the edge detector
-// misses by counting pixels in the ROI whose raw luma changed > MOTION_PIXEL_DELTA
-// vs. the previous frame. Calibrated against the quiet-scene noise floor.
-#define MOTION_PIXEL_DELTA 30
+// misses by counting pixels in the ROI whose raw luma changed > motionPixelDelta
+// vs. the previous frame. Calibrated against the quiet-scene noise floor; both
+// the per-pixel delta and the absolute threshold are runtime-tunable via REST.
 uint8_t* prevFrame = nullptr;            // PSRAM copy of last raw luma frame
 volatile bool prevFrameValid = false;
-volatile int motionThreshold = 0;        // 0 = uncalibrated / disabled
+volatile int motionPixelDelta = 30;      // |Δluma| above this counts a pixel as "moving" (/motion-delta)
+volatile int motionThreshold = 0;        // 0 = disabled; pixels-moving needed to fire (/motion-threshold)
 volatile int calMotionFloor = 0;         // peak noise motion count observed during cal
 volatile int lastMotion = 0;             // live motion count for diagnostics
 
 // Detection params
 #define COOLDOWN_MS 10000
 #define STABLE_FRAMES_NEEDED 1
-// During PLAYING, only encode 1 in PLAY_STREAM_SKIP frames to leave CPU for the
+// During PLAYING, only encode 1 in playStreamSkip frames to leave CPU for the
 // detection loop (JPEG dominates the per-frame cost). A goal-frame always encodes.
-#define PLAY_STREAM_SKIP 3
+// Runtime-tunable via /stream-skip; 1 disables throttling.
+volatile int playStreamSkip = 3;
 
 // ROI offset and size for digital pan/resize (adjusted via /roi endpoint).
 // Default + auto-tune lock: 304×160 centered (matches a typical button-soccer
@@ -634,7 +636,7 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
 
     // Sample the quiet-scene motion floor inside the ROI so the
     // frame-differencing trigger has a sensible threshold. Counts pixels with
-    // |Δluma| > MOTION_PIXEL_DELTA between consecutive frames; we keep the
+    // |Δluma| > motionPixelDelta between consecutive frames; we keep the
     // peak across 6 samples (worst-case noise) and scale it by 4x + slack.
     if (prevFrame && fb->format == PIXFORMAT_GRAYSCALE) {
         memcpy(prevFrame, fb->buf, (size_t)DETECT_W * DETECT_H);
@@ -655,7 +657,7 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
                 for (int x = 0; x < rw; x++) {
                     int d = (int)a[x] - (int)b[x];
                     if (d < 0) d = -d;
-                    if (d > MOTION_PIXEL_DELTA) mc++;
+                    if (d > motionPixelDelta) mc++;
                 }
             }
             if (mc > noisePeak) noisePeak = mc;
@@ -1024,7 +1026,7 @@ void loop() {
     else lastRejectReason = "REJECTED";
 
     // Frame-differencing trigger — counts pixels in the ROI whose raw luma
-    // changed by more than MOTION_PIXEL_DELTA vs. the previous frame. This
+    // changed by more than motionPixelDelta vs. the previous frame. This
     // catches a ball that flashes through the ROI in 1-2 frames (too brief
     // for the edge detector + bbox filter to lock onto). Must run BEFORE
     // applyThreshold while pixels still holds raw luma.
@@ -1036,7 +1038,7 @@ void loop() {
             for (int x = 0; x < rw; x++) {
                 int d = (int)a[x] - (int)b[x];
                 if (d < 0) d = -d;
-                if (d > MOTION_PIXEL_DELTA) motionCount++;
+                if (d > motionPixelDelta) motionCount++;
             }
         }
     }
@@ -1068,9 +1070,9 @@ void loop() {
     }
 
     // Encode the (binarized) grayscale frame — overlays drawn client-side.
-    // JPEG encoding dominates per-frame CPU; we encode 1-in-PLAY_STREAM_SKIP
+    // JPEG encoding dominates per-frame CPU; we encode 1-in-playStreamSkip
     // frames during play (and always on a goal) so detection runs ~2x faster.
-    bool shouldEncode = (frameNum % PLAY_STREAM_SKIP == 0) || isGoal;
+    bool shouldEncode = (playStreamSkip <= 1) || (frameNum % playStreamSkip == 0) || isGoal;
     if (shouldEncode) {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
