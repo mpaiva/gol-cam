@@ -69,6 +69,10 @@ font-size:0.85em;color:var(--muted);margin-bottom:6px;padding:0 4px}
 
 .feed-actions{display:flex;gap:6px;margin:8px 0 4px;flex-wrap:wrap;justify-content:center}
 .feed-actions .btn{padding:9px 14px;font-size:0.85em}
+.cal-msg{font-size:0.75em;padding:6px 10px;margin:4px 0 0;border-radius:6px;text-align:center;display:none;line-height:1.3}
+.cal-msg.cal-ok{display:block;background:rgba(0,170,0,0.18);color:#9f9;border-left:3px solid var(--green)}
+.cal-msg.cal-fail{display:block;background:rgba(200,0,0,0.18);color:#f99;border-left:3px solid var(--red)}
+.cal-msg.cal-running{display:block;background:rgba(255,153,0,0.15);color:#fc6;border-left:3px solid var(--orange)}
 .roi-bar{display:flex;align-items:center;justify-content:space-between;
 gap:6px;margin-top:6px;font-size:0.72em;color:var(--muted)}
 .roi-bar .dpad{display:grid;grid-template-columns:repeat(3,28px);grid-template-rows:repeat(3,24px);gap:2px}
@@ -205,9 +209,10 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <div class='info' id='roi-home'></div>
 </div>
 <div class='feed-actions'>
-<button class='btn btn-tune' onclick='autotune("home")' data-i18n='match.tune'>⚙ Auto-Tune</button>
-<button class='btn btn-cal' onclick='calibrate("home")' data-i18n='match.cal'>🎯 Calibrate</button>
+<button class='btn btn-tune' id='btn-tune-home' onclick='autotune("home")' data-i18n='match.tune'>⚙ Auto-Tune</button>
+<button class='btn btn-cal' id='btn-cal-home' onclick='calibrate("home")' data-i18n='match.cal'>🎯 Calibrate</button>
 </div>
+<div id='cal-msg-home' class='cal-msg'></div>
 <details class='expert'>
 <summary data-i18n='match.expert'>⚙ Expert</summary>
 <div class='expert-body'>
@@ -256,9 +261,10 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <div class='info' id='roi-away'></div>
 </div>
 <div class='feed-actions'>
-<button class='btn btn-tune' onclick='autotune("away")' data-i18n='match.tune'>⚙ Auto-Tune</button>
-<button class='btn btn-cal' onclick='calibrate("away")' data-i18n='match.cal'>🎯 Calibrate</button>
+<button class='btn btn-tune' id='btn-tune-away' onclick='autotune("away")' data-i18n='match.tune'>⚙ Auto-Tune</button>
+<button class='btn btn-cal' id='btn-cal-away' onclick='calibrate("away")' data-i18n='match.cal'>🎯 Calibrate</button>
 </div>
+<div id='cal-msg-away' class='cal-msg'></div>
 <details class='expert'>
 <summary data-i18n='match.expert'>⚙ Expert</summary>
 <div class='expert-body'>
@@ -312,6 +318,8 @@ en:{
 'match.home_label':'HOME','match.away_label':'AWAY',
 'match.home_goal':'Home Goal','match.away_goal':'Away Goal',
 'match.cal':'🎯 Calibrate','match.tune':'⚙ Auto-Tune',
+'match.calibrating':'Calibrating...','match.analyzing':'Analyzing frame...',
+'match.cal_net_err':'Network error contacting camera','match.cal_read_err':'Calibrated but could not read status',
 'match.expert':'⚙ Expert',
 'match.cam_section':'Camera','match.post_section':'Post','match.audio_section':'Audio',
 'match.start':'▶ Start Match','match.pause':'Pause','match.resume':'Resume',
@@ -337,6 +345,8 @@ pt:{
 'match.home_label':'CASA','match.away_label':'FORA',
 'match.home_goal':'Gol Casa','match.away_goal':'Gol Fora',
 'match.cal':'🎯 Calibrar','match.tune':'⚙ Auto-Ajuste',
+'match.calibrating':'Calibrando...','match.analyzing':'Analisando frame...',
+'match.cal_net_err':'Erro de rede ao contatar a câmera','match.cal_read_err':'Calibrado mas não foi possível ler status',
 'match.expert':'⚙ Avançado',
 'match.cam_section':'Câmera','match.post_section':'Pós','match.audio_section':'Áudio',
 'match.start':'▶ Iniciar','match.pause':'Pausar','match.resume':'Continuar',
@@ -564,7 +574,28 @@ async function resetRoi(side){
   await fetch('http://'+ip+'/roi?x=0&y=0');}
 async function calibrate(side){
   const ip=boards[side].ip;if(!ip)return;
-  await fetch('http://'+ip+'/calibrate');}
+  const btn=$('btn-cal-'+side), msg=$('cal-msg-'+side);
+  const origLabel=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent=t('match.calibrating');}
+  if(msg){msg.className='cal-msg cal-running';msg.textContent=t('match.analyzing');}
+  try{await fetch('http://'+ip+'/calibrate');}catch(e){
+    if(msg){msg.className='cal-msg cal-fail';msg.textContent=t('match.cal_net_err');}
+    if(btn){btn.disabled=false;btn.textContent=origLabel;}
+    return;}
+  // Calibration runs server-side over ~6 frames + LED flash → ~1.5-2 s.
+  // Then read /status for the verdict.
+  setTimeout(async()=>{
+    try{
+      const r=await fetch('http://'+ip+'/status');
+      const d=await r.json();
+      if(msg){
+        msg.className='cal-msg '+(d.calibrated?'cal-ok':'cal-fail');
+        msg.textContent=d.calMsg||(d.calibrated?'OK':'FAILED');}
+    }catch(e){
+      if(msg){msg.className='cal-msg cal-fail';msg.textContent=t('match.cal_read_err');}
+    }
+    if(btn){btn.disabled=false;btn.textContent=origLabel;}
+  },2000);}
 
 function setMatchSlider(s,v){
   if(v===undefined||v===null||Number.isNaN(v))return;

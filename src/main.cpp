@@ -591,6 +591,11 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
             "FAILED: No edges found (%d). Place dadinho with good contrast.", peakMag);
         saveCalSnapshot(fb, pixels, -1, 0, 0, 0, 0);
         Serial.println("[cal] FAILED: no edges found!");
+        // Wipe stale calibration so /status.calibrated honestly reports false
+        // and the dashboards drop back to "Idle" until a successful recal.
+        calContrastMin = 0; calPixelCount = 0;
+        calBboxW = 0; calBboxH = 0;
+        motionThreshold = 0; calMotionFloor = 0;
         gameState = STATE_IDLE;
         return;
     }
@@ -621,6 +626,10 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
             "FAILED: Too few edges (%d px). Move dadinho closer.", (int)edgeCount);
         saveCalSnapshot(fb, pixels, -1, 0, 0, 0, 0);
         Serial.println("[cal] FAILED: too few edge pixels!");
+        // Wipe stale calibration (see comment above).
+        calContrastMin = 0; calPixelCount = 0;
+        calBboxW = 0; calBboxH = 0;
+        motionThreshold = 0; calMotionFloor = 0;
         gameState = STATE_IDLE;
         return;
     }
