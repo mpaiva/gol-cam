@@ -43,14 +43,13 @@ extern volatile uint32_t lastGoalTimeMs;
 extern void requestCalibration();
 extern void requestAutotune();
 extern void requestTestFire();
-extern volatile int contrastThreshold;
 extern volatile int speakerVolume;
 extern void playGoalSound();
 extern void pushGoalToScoreboard();
 extern volatile int autotuneStage, autotuneStep, autotuneTotalSteps, autotuneBestScore, autotuneDone;
 extern volatile int autotuneBestGain, autotuneBestGceil, autotuneBestAec;
 extern volatile int autotuneBestGma, autotuneBestLenc;
-extern volatile int autotuneBestCon, autotuneBestBri, autotuneBestSharp, autotuneBestThresh;
+extern volatile int autotuneBestCon, autotuneBestBri, autotuneBestSharp;
 extern volatile int curCamGain, curCamGceil, curCamAec, curCamGma, curCamLenc;
 extern volatile int curCamCon, curCamBri, curCamSharp;
 extern volatile int diceBboxX, diceBboxY, diceBboxW, diceBboxH;
@@ -129,7 +128,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"diceX\":%d,\"diceY\":%d,\"diceW\":%d,\"diceH\":%d,"
         "\"autoStage\":%d,\"autoStep\":%d,\"autoTotal\":%d,\"autoScore\":%d,\"autoDone\":%d,"
         "\"autoGain\":%d,\"autoGceil\":%d,\"autoAec\":%d,\"autoGma\":%d,\"autoLenc\":%d,"
-        "\"autoCon\":%d,\"autoBri\":%d,\"autoSharp\":%d,\"autoThresh\":%d,"
+        "\"autoCon\":%d,\"autoBri\":%d,\"autoSharp\":%d,"
         "\"curGain\":%d,\"curGceil\":%d,\"curAec\":%d,\"curGma\":%d,\"curLenc\":%d,"
         "\"curCon\":%d,\"curBri\":%d,\"curSharp\":%d,"
         "\"scoreboardIp\":\"%s\","
@@ -153,7 +152,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         (int)autotuneStage, (int)autotuneStep, (int)autotuneTotalSteps, (int)autotuneBestScore, (int)autotuneDone,
         (int)autotuneBestGain, (int)autotuneBestGceil, (int)autotuneBestAec,
         (int)autotuneBestGma, (int)autotuneBestLenc,
-        (int)autotuneBestCon, (int)autotuneBestBri, (int)autotuneBestSharp, (int)autotuneBestThresh,
+        (int)autotuneBestCon, (int)autotuneBestBri, (int)autotuneBestSharp,
         (int)curCamGain, (int)curCamGceil, (int)curCamAec, (int)curCamGma, (int)curCamLenc,
         (int)curCamCon, (int)curCamBri, (int)curCamSharp,
         scoreboardIp,
@@ -465,24 +464,6 @@ static esp_err_t led_handler(httpd_req_t *req) {
     return httpd_resp_send(req, resp, strlen(resp));
 }
 
-static esp_err_t threshold_handler(httpd_req_t *req) {
-    char buf[32];
-    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
-        char val[8];
-        if (httpd_query_key_value(buf, "val", val, sizeof(val)) == ESP_OK) {
-            int v = atoi(val);
-            if (v < 0) v = 0;
-            if (v > 255) v = 255;
-            contrastThreshold = v;
-        }
-    }
-    char resp[64];
-    snprintf(resp, sizeof(resp), "{\"ok\":true,\"threshold\":%d}", contrastThreshold);
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    return httpd_resp_send(req, resp, strlen(resp));
-}
-
 static esp_err_t autotune_handler(httpd_req_t *req) {
     requestAutotune();
     httpd_resp_set_type(req, "application/json");
@@ -551,7 +532,7 @@ void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_uri_handlers = 27;
+    config.max_uri_handlers = 26;
     config.max_open_sockets = 10;
     config.lru_purge_enable = true;
     config.stack_size = 8192;
@@ -579,7 +560,6 @@ void startCameraServer() {
         httpd_uri_t test_fire_uri  = { .uri = "/test-fire",  .method = HTTP_GET, .handler = test_fire_handler };
         httpd_uri_t volume_uri = { .uri = "/volume", .method = HTTP_GET, .handler = volume_handler };
         httpd_uri_t led_uri = { .uri = "/led", .method = HTTP_GET, .handler = led_handler };
-        httpd_uri_t threshold_uri = { .uri = "/threshold", .method = HTTP_GET, .handler = threshold_handler };
         httpd_uri_t autotune_uri = { .uri = "/autotune", .method = HTTP_GET, .handler = autotune_handler };
         httpd_uri_t motion_delta_uri  = { .uri = "/motion-delta",     .method = HTTP_GET, .handler = motion_delta_handler };
         httpd_uri_t motion_th_uri     = { .uri = "/motion-threshold", .method = HTTP_GET, .handler = motion_threshold_handler };
@@ -605,7 +585,6 @@ void startCameraServer() {
         httpd_register_uri_handler(server, &test_fire_uri);
         httpd_register_uri_handler(server, &volume_uri);
         httpd_register_uri_handler(server, &led_uri);
-        httpd_register_uri_handler(server, &threshold_uri);
         httpd_register_uri_handler(server, &autotune_uri);
         httpd_register_uri_handler(server, &motion_delta_uri);
         httpd_register_uri_handler(server, &motion_th_uri);

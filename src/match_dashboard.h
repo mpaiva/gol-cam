@@ -226,8 +226,6 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <label>GCeil<input type='range' min='0' max='6' value='1' onchange="camAdj('home','gceil',this.value)"></label>
 <label>Gamma<input type='checkbox' onclick="camAdj('home','gma',this.checked?1:0)"></label>
 <label>Lens<input type='checkbox' onclick="camAdj('home','lenc',this.checked?1:0)"></label>
-<div class='group-title' data-i18n='match.post_section'>Post</div>
-<label style='grid-column:1 / -1'>B&amp;W<input type='range' min='0' max='255' value='30' onchange="setThreshold('home',this.value)"></label>
 <div class='group-title' data-i18n='match.audio_section'>Audio</div>
 <label>Vol<input type='range' min='0' max='100' value='70' onchange="setVolume('home',this.value)"><span class='play' onclick="testSound('home')">▶</span></label>
 <label>LED<input type='checkbox' onclick="setLed('home',this.checked?1:0)"></label>
@@ -278,8 +276,6 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <label>GCeil<input type='range' min='0' max='6' value='1' onchange="camAdj('away','gceil',this.value)"></label>
 <label>Gamma<input type='checkbox' onclick="camAdj('away','gma',this.checked?1:0)"></label>
 <label>Lens<input type='checkbox' onclick="camAdj('away','lenc',this.checked?1:0)"></label>
-<div class='group-title' data-i18n='match.post_section'>Post</div>
-<label style='grid-column:1 / -1'>B&amp;W<input type='range' min='0' max='255' value='30' onchange="setThreshold('away',this.value)"></label>
 <div class='group-title' data-i18n='match.audio_section'>Audio</div>
 <label>Vol<input type='range' min='0' max='100' value='70' onchange="setVolume('away',this.value)"><span class='play' onclick="testSound('away')">▶</span></label>
 <label>LED<input type='checkbox' onclick="setLed('away',this.checked?1:0)"></label>
@@ -321,7 +317,7 @@ en:{
 'match.calibrating':'Calibrating...','match.analyzing':'Analyzing frame...',
 'match.cal_net_err':'Network error contacting camera','match.cal_read_err':'Calibrated but could not read status',
 'match.expert':'⚙ Expert',
-'match.cam_section':'Camera','match.post_section':'Post','match.audio_section':'Audio',
+'match.cam_section':'Camera','match.audio_section':'Audio',
 'match.start':'▶ Start Match','match.pause':'Pause','match.resume':'Resume',
 'match.reset':'Reset','match.end':'End Match',
 'match.offline':'OFFLINE','match.ready':'READY','match.idle':'IDLE',
@@ -348,7 +344,7 @@ pt:{
 'match.calibrating':'Calibrando...','match.analyzing':'Analisando frame...',
 'match.cal_net_err':'Erro de rede ao contatar a câmera','match.cal_read_err':'Calibrado mas não foi possível ler status',
 'match.expert':'⚙ Avançado',
-'match.cam_section':'Câmera','match.post_section':'Pós','match.audio_section':'Áudio',
+'match.cam_section':'Câmera','match.audio_section':'Áudio',
 'match.start':'▶ Iniciar','match.pause':'Pausar','match.resume':'Continuar',
 'match.reset':'Reiniciar','match.end':'Encerrar',
 'match.offline':'OFFLINE','match.ready':'PRONTO','match.idle':'AGUARDANDO',
@@ -551,9 +547,6 @@ $('btn-lb-anula').onclick=function(){
 async function camAdj(side,param,val){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/cam?'+param+'='+val);}
-async function setThreshold(side,val){
-  const ip=boards[side].ip;if(!ip)return;
-  await fetch('http://'+ip+'/threshold?val='+val);}
 async function setVolume(side,val){
   const ip=boards[side].ip;if(!ip)return;
   await fetch('http://'+ip+'/volume?val='+val);}
@@ -614,8 +607,7 @@ function syncMatchSliders(panel,d,useCur){
     else if(oc.includes("'gceil'"))setMatchSlider(s,gc);
     else if(oc.includes("'con'"))setMatchSlider(s,c);
     else if(oc.includes("'bri'"))setMatchSlider(s,b);
-    else if(oc.includes("'sharp'"))setMatchSlider(s,sh);
-    else if(!useCur&&oc.includes('setThreshold'))setMatchSlider(s,d.autoThresh);});
+    else if(oc.includes("'sharp'"))setMatchSlider(s,sh);});
   panel.querySelectorAll('input[type=checkbox]').forEach(cb=>{
     const oc=cb.getAttribute('onclick')||'';
     if(oc.includes("'gma'")&&gm!==undefined)cb.checked=!!gm;

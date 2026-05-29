@@ -214,8 +214,6 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <label>GCeil<input type='range' min='0' max='6' value='1' onchange="camAdj('gceil',this.value)"></label>
 <label>Gamma<input type='checkbox' onclick="camAdj('gma',this.checked?1:0)"></label>
 <label>Lens<input type='checkbox' onclick="camAdj('lenc',this.checked?1:0)"></label>
-<div class='group-title' data-i18n='train.post_section'>Post-process</div>
-<label style='grid-column:1 / -1'>B&amp;W<input type='range' min='0' max='255' value='30' onchange="fetch('/threshold?val='+this.value)"></label>
 <div class='group-title' data-i18n='train.audio_section'>Audio</div>
 <label>Vol<input type='range' min='0' max='100' value='70' onchange="fetch('/volume?val='+this.value)"><span class='play' onclick="fetch('/test-sound')">&#9654;</span></label>
 <label>LED<input type='checkbox' onclick="fetch('/led?val='+(this.checked?1:0))"></label>
@@ -269,7 +267,6 @@ en:{
 'train.gol_num':'GOL #%d',
 'train.expert':'⚙ Expert Settings',
 'train.cam_section':'Camera',
-'train.post_section':'Post-process',
 'train.audio_section':'Audio','train.scoreboard_section':'Scoreboard',
 'train.goals_section':'Goals',
 'train.console_section':'Console'
@@ -304,7 +301,6 @@ pt:{
 'train.gol_num':'GOL #%d',
 'train.expert':'⚙ Avançado',
 'train.cam_section':'Câmera',
-'train.post_section':'Pós-processo',
 'train.audio_section':'Áudio','train.scoreboard_section':'Placar',
 'train.goals_section':'Gols',
 'train.console_section':'Console'
@@ -433,8 +429,7 @@ else if(oc.includes("'gain'"))setSlider(s,g);
 else if(oc.includes("'gceil'"))setSlider(s,gc);
 else if(oc.includes("'con'"))setSlider(s,c);
 else if(oc.includes("'bri'"))setSlider(s,b);
-else if(oc.includes("'sharp'"))setSlider(s,sh);
-else if(!useCur&&oc.includes('/threshold'))setSlider(s,d.autoThresh);});
+else if(oc.includes("'sharp'"))setSlider(s,sh);});
 document.querySelectorAll('.cam-sliders input[type=checkbox]').forEach(cb=>{
 const oc=cb.getAttribute('onclick')||'';
 if(oc.includes("'gma'")&&gm!==undefined)cb.checked=!!gm;

@@ -52,7 +52,6 @@ volatile int autotuneBestLenc  = 0;
 volatile int autotuneBestCon   = 1;
 volatile int autotuneBestBri   = -1;
 volatile int autotuneBestSharp = 1;
-volatile int autotuneBestThresh = 30;
 
 // Live "currently being tested" values — updated every applyCamSettings() so the
 // dashboard can show sliders moving in real time during the sweep.
@@ -109,9 +108,6 @@ volatile const char* lastRejectReason = "";
 // when the dice passes the size/density filters; consumed by the dashboard's SVG
 // overlay. -1 = no current detection.
 volatile int diceBboxX = -1, diceBboxY = -1, diceBboxW = 0, diceBboxH = 0;
-
-// Software contrast threshold (0=off, 1-255=progressively B&W)
-volatile int contrastThreshold = 30;
 
 // Calibration snapshot
 uint8_t* calSnapshotBuf = nullptr;
@@ -486,16 +482,6 @@ void setup() {
     Serial.println("=== gol-cam ready ===");
 }
 
-// Hard B&W binarization: pixels < threshold → 0, >= threshold → 255.
-// threshold=0 means pass-through (no binarization).
-void applyThreshold(uint8_t* pixels, int w, int h, int threshold) {
-    if (threshold <= 0) return;
-    int totalPx = w * h;
-    for (int i = 0; i < totalPx; i++) {
-        pixels[i] = (pixels[i] < threshold) ? 0 : 255;
-    }
-}
-
 // Helper: compute ROI bounds
 void computeROI(int &rx, int &ry, int &rw, int &rh) {
     rw = roiW; rh = roiH;
@@ -715,43 +701,6 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
     gameState = STATE_IDLE;
 }
 
-// Otsu's between-class variance over ROI. Returns peak score (long, scaled) and
-// writes argmax threshold into *bestT. Higher peak = cleaner bimodal separation.
-long otsuScore(uint8_t* pixels, int w, int rx, int ry, int rw, int rh, int* bestT) {
-    int hist[256] = {0};
-    int total = 0;
-    for (int y = ry; y < ry + rh; y++) {
-        uint8_t* row = pixels + y * w + rx;
-        for (int i = 0; i < rw; i++) hist[row[i]]++;
-        total += rw;
-    }
-    if (total == 0) { *bestT = 128; return 0; }
-
-    long sum = 0;
-    for (int i = 0; i < 256; i++) sum += (long)i * hist[i];
-
-    long sumB = 0;
-    long wB = 0;
-    long peak = 0;
-    int peakT = 128;
-    for (int t = 0; t < 256; t++) {
-        wB += hist[t];
-        if (wB == 0) continue;
-        long wF = total - wB;
-        if (wF == 0) break;
-        sumB += (long)t * hist[t];
-        // Use squared-mean-diff scaled by class weights — keep numbers manageable.
-        // (mB - mF)² in 0..65025; wB*wF / 1024 keeps the product within long range.
-        long mBn = sumB;                 // sum * count units
-        long mFn = sum - sumB;
-        long diff = (mBn * wF - mFn * wB);
-        long score = diff * diff / ((wB * wF) + 1) / 1024;
-        if (score > peak) { peak = score; peakT = t; }
-    }
-    *bestT = peakT;
-    return peak;
-}
-
 // Stddev of pixel intensity in ROI — used as the camera-sweep metric.
 // Higher stddev = more dynamic range = better contrast for binarization.
 long roiStdev(uint8_t* pixels, int w, int rx, int ry, int rw, int rh) {
@@ -800,10 +749,11 @@ static void applyCamSettings(const CamSettings& c) {
 }
 
 // Apply sensor params, wait for camera to settle, then capture and score.
-// Returns ROI variance (camera-sweep metric); writes Otsu's optimal threshold into *bestT.
+// Returns ROI variance (the camera-sweep metric — higher = more dynamic range
+// in the goal mouth, which the edge + motion triggers like).
 // Set pushStreamFrame=true to also publish this frame to the MJPEG stream so
 // the dashboard doesn't go stale during long sweeps (called once per stage).
-static long captureAndScore(const CamSettings& c, int* bestT, bool pushStreamFrame) {
+static long captureAndScore(const CamSettings& c, bool pushStreamFrame) {
     applyCamSettings(c);
     // Discard 2 frames to let exposure/gain settle. esp_camera_fb_get blocks
     // until a new frame is available, so no extra delay is needed.
@@ -814,13 +764,11 @@ static long captureAndScore(const CamSettings& c, int* bestT, bool pushStreamFra
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb || fb->format != PIXFORMAT_GRAYSCALE) {
         if (fb) esp_camera_fb_return(fb);
-        *bestT = 128;
         return 0;
     }
     int rx, ry, rw, rh;
     computeROI(rx, ry, rw, rh);
     long score = roiStdev(fb->buf, DETECT_W, rx, ry, rw, rh);
-    otsuScore(fb->buf, DETECT_W, rx, ry, rw, rh, bestT);
     if (pushStreamFrame) {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
@@ -834,9 +782,9 @@ static long captureAndScore(const CamSettings& c, int* bestT, bool pushStreamFra
 }
 
 // Sweep one parameter through `values`, keeping all other settings at `*best`.
-// Updates `*best` and `*bestScore`/`*bestThresh` if any tested value beats current best.
+// Updates `*best` and `*bestScore` if any tested value beats current best.
 // `field` is a pointer-to-member-style int* that lives inside `*best`.
-static void sweepParam(CamSettings* best, long* bestScore, int* bestThresh,
+static void sweepParam(CamSettings* best, long* bestScore,
                        int* field, const int* values, int nVals,
                        const char* label, int stageNum) {
     autotuneStage = stageNum;
@@ -847,16 +795,15 @@ static void sweepParam(CamSettings* best, long* bestScore, int* bestThresh,
     for (int i = 0; i < nVals; i++) {
         autotuneStep = i + 1;
         *field = values[i];
-        int t;
         // Push the LAST capture of each sweep to the stream so the browser
         // sees a fresh frame every ~300-500 ms during the autotune.
         bool publish = (i == nVals - 1);
-        long score = captureAndScore(*best, &t, publish);
-        Serial.printf("[tune]  %s=%d  score=%ld  thresh=%d\n", label, values[i], score, t);
+        long score = captureAndScore(*best, publish);
+        Serial.printf("[tune]  %s=%d  score=%ld\n", label, values[i], score);
         snprintf(calFeedback, sizeof(calFeedback),
             "Auto-tune: %s %d/%d  best=%ld", label, i + 1, nVals, *bestScore);
         if (score > *bestScore) {
-            *bestScore = score; bestVal = values[i]; *bestThresh = t;
+            *bestScore = score; bestVal = values[i];
         }
     }
     *field = bestVal;            // lock in winning value
@@ -883,21 +830,13 @@ void runAutotune() {
 
     CamSettings best = { .gain=8, .gceil=2, .aec=300, .gma=0, .lenc=0, .con=1, .bri=0, .sharp=1 };
     long bestScore = 0;
-    int bestThresh = 128;
 
-    sweepParam(&best, &bestScore, &bestThresh, &best.gain,  gainVals,  4, "gain",  1);
-    sweepParam(&best, &bestScore, &bestThresh, &best.gceil, gceilVals, 3, "gceil", 2);
-    sweepParam(&best, &bestScore, &bestThresh, &best.aec,   aecVals,   5, "aec",   3);
-    sweepParam(&best, &bestScore, &bestThresh, &best.bri,   briVals,   3, "bri",   4);
-
-    // Clamp the auto-Otsu threshold to a usable range. Below ~30 the binarised
-    // frame becomes mostly white (dadinho disappears); above ~220 it's mostly
-    // black. Both extremes hide the dadinho during play.
-    if (bestThresh < 30)  bestThresh = 30;
-    if (bestThresh > 220) bestThresh = 220;
+    sweepParam(&best, &bestScore, &best.gain,  gainVals,  4, "gain",  1);
+    sweepParam(&best, &bestScore, &best.gceil, gceilVals, 3, "gceil", 2);
+    sweepParam(&best, &bestScore, &best.aec,   aecVals,   5, "aec",   3);
+    sweepParam(&best, &bestScore, &best.bri,   briVals,   3, "bri",   4);
 
     applyCamSettings(best);
-    contrastThreshold = bestThresh;
     autotuneBestScore  = (int)(bestScore > 2147483647L ? 2147483647L : bestScore);
     autotuneBestGain   = best.gain;
     autotuneBestGceil  = best.gceil;
@@ -907,7 +846,6 @@ void runAutotune() {
     autotuneBestCon    = best.con;
     autotuneBestBri    = best.bri;
     autotuneBestSharp  = best.sharp;
-    autotuneBestThresh = bestThresh;
     autotuneDone = 1;
 
     if (bestScore < 100) {
@@ -915,11 +853,11 @@ void runAutotune() {
             "Auto-tune done — low contrast (score %ld). Place dadinho in ROI.", bestScore);
     } else {
         snprintf(calFeedback, sizeof(calFeedback),
-            "Auto-tune done! gain=%d gceil=%d aec=%d bri=%d B&W=%d  score=%ld",
-            best.gain, best.gceil, best.aec, best.bri, bestThresh, bestScore);
+            "Auto-tune done! gain=%d gceil=%d aec=%d bri=%d  score=%ld",
+            best.gain, best.gceil, best.aec, best.bri, bestScore);
     }
-    Serial.printf("[tune] DONE  gain=%d gceil=%d aec=%d bri=%d thresh=%d score=%ld\n",
-        best.gain, best.gceil, best.aec, best.bri, bestThresh, bestScore);
+    Serial.printf("[tune] DONE  gain=%d gceil=%d aec=%d bri=%d score=%ld\n",
+        best.gain, best.gceil, best.aec, best.bri, bestScore);
 
     gameState = STATE_IDLE;
 }
@@ -1100,8 +1038,7 @@ void loop() {
     // Frame-differencing trigger — counts pixels in the ROI whose raw luma
     // changed by more than motionPixelDelta vs. the previous frame. This
     // catches a ball that flashes through the ROI in 1-2 frames (too brief
-    // for the edge detector + bbox filter to lock onto). Must run BEFORE
-    // applyThreshold while pixels still holds raw luma.
+    // for the edge detector + bbox filter to lock onto).
     int motionCount = 0;
     if (prevFrame && prevFrameValid && motionThreshold > 0) {
         for (int y = ry; y < ry + rh; y++) {
@@ -1116,9 +1053,8 @@ void loop() {
     }
     lastMotion = motionCount;
 
-    // Compute the goal decision NOW (before applyThreshold) so we can encode
-    // the VAR snapshot from the raw, human-readable luma frame. The stream
-    // still gets the binarised version below for detection-state visualisation.
+    // Compute the goal decision before encoding so isGoal can drive the VAR
+    // snapshot capture below.
     detector.lastChangeRatio = (float)matchCount / (rw * rh);
     detector.frameCount = frameNum;
     bool inCooldown = (now - lastGoalTimeMs) < COOLDOWN_MS;
@@ -1131,9 +1067,8 @@ void loop() {
     //   (a) current fb = "trigger frame" (what we saw when we decided to score)
     //   (b) prevFrame  = "before" frame (one earlier; for motion triggers this
     //                    is often where the ball was actually visible).
-    // Both must be encoded BEFORE applyThreshold() corrupts the raw luma and
-    // BEFORE the memcpy that overwrites prevFrame. Mutex held for the whole
-    // pair so the dashboard never reads a half-updated set.
+    // Both must be encoded BEFORE the memcpy that overwrites prevFrame. Mutex
+    // held for the whole pair so the dashboard never reads a half-updated set.
     if (isGoal && goalSnapshotBuf && goalSnapshotPrevBuf && goalSnapshotMutex) {
         uint8_t* var_jpg = NULL;
         size_t var_len = 0;
@@ -1168,7 +1103,7 @@ void loop() {
         if (prev_jpg) free(prev_jpg);
     }
 
-    // Snapshot raw luma into prevFrame BEFORE applyThreshold corrupts it.
+    // Stash this frame as the motion-diff reference for the next iteration.
     if (prevFrame) {
         memcpy(prevFrame, pixels, (size_t)DETECT_W * DETECT_H);
         prevFrameValid = true;
