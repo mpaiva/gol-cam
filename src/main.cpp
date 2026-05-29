@@ -718,23 +718,23 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
     gameState = STATE_IDLE;
 }
 
-// Stddev of pixel intensity in ROI — used as the camera-sweep metric.
-// Higher stddev = more dynamic range = better contrast for binarization.
-long roiStdev(uint8_t* pixels, int w, int rx, int ry, int rw, int rh) {
-    long sum = 0, sum2 = 0;
-    long n = (long)rw * rh;
-    for (int y = ry; y < ry + rh; y++) {
-        uint8_t* row = pixels + y * w + rx;
-        for (int i = 0; i < rw; i++) {
-            int v = row[i];
-            sum += v;
-            sum2 += v * v;
+// Sum of Sobel gradient magnitudes inside the ROI — the autotune objective.
+// Optimising this picks exposures with crisp edges anywhere in the ROI, which
+// is exactly what the goal detector consumes. Penalises saturation naturally
+// (clipped highlights are flat → zero gradient) where ROI variance rewarded
+// it. Skips a 1px border so the 3×3 Sobel kernel has full neighbourhood data.
+long roiGradEnergy(uint8_t* pixels, int w, int rx, int ry, int rw, int rh) {
+    int sx = max(1, rx);
+    int sy = max(1, ry);
+    int ex = min(w - 2, rx + rw - 1);
+    int ey = min(DETECT_H - 2, ry + rh - 1);
+    long sum = 0;
+    for (int y = sy; y <= ey; y++) {
+        for (int x = sx; x <= ex; x++) {
+            sum += sobelMag(pixels, x, y, w);
         }
     }
-    if (n == 0) return 0;
-    long mean = sum / n;
-    long var = sum2 / n - mean * mean;
-    return var;  // skip sqrt — argmax is monotonic in variance
+    return sum;
 }
 
 // All sensor knobs the autotune cycles through.
@@ -766,8 +766,11 @@ static void applyCamSettings(const CamSettings& c) {
 }
 
 // Apply sensor params, wait for camera to settle, then capture and score.
-// Returns ROI variance (the camera-sweep metric — higher = more dynamic range
-// in the goal mouth, which the edge + motion triggers like).
+// Returns ROI Sobel-gradient energy — the autotune objective. Higher = more
+// edge content in the goal mouth, which is exactly what both the edge and
+// the motion detectors consume. Crucially, saturated regions (the IR hot
+// spot) are flat and contribute nothing, so the optimiser stops chasing
+// extreme exposures that wash out the dadinho.
 // Set pushStreamFrame=true to also publish this frame to the MJPEG stream so
 // the dashboard doesn't go stale during long sweeps (called once per stage).
 static long captureAndScore(const CamSettings& c, bool pushStreamFrame) {
@@ -785,7 +788,7 @@ static long captureAndScore(const CamSettings& c, bool pushStreamFrame) {
     }
     int rx, ry, rw, rh;
     computeROI(rx, ry, rw, rh);
-    long score = roiStdev(fb->buf, DETECT_W, rx, ry, rw, rh);
+    long score = roiGradEnergy(fb->buf, DETECT_W, rx, ry, rw, rh);
     if (pushStreamFrame) {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
@@ -865,9 +868,12 @@ void runAutotune() {
     autotuneBestSharp  = best.sharp;
     autotuneDone = 1;
 
-    if (bestScore < 100) {
+    // Gradient-energy scale: a quiet flat scene runs ~5-20k; a sharp dadinho
+    // in good light easily clears 200k. Below ~50k there's barely any edge
+    // structure to lock onto.
+    if (bestScore < 50000) {
         snprintf(calFeedback, sizeof(calFeedback),
-            "Auto-tune done — low contrast (score %ld). Place dadinho in ROI.", bestScore);
+            "Auto-tune done — low edge content (score %ld). Place dadinho in ROI.", bestScore);
     } else {
         snprintf(calFeedback, sizeof(calFeedback),
             "Auto-tune done! gain=%d gceil=%d aec=%d bri=%d  score=%ld",
