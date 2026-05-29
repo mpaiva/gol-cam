@@ -1027,7 +1027,6 @@ void loop() {
             memcpy(prevFrame, fb->buf, (size_t)DETECT_W * DETECT_H);
             prevFrameValid = true;
         }
-        applyThreshold(pixels, DETECT_W, DETECT_H, contrastThreshold);
         diceBboxX = -1;
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
@@ -1174,9 +1173,6 @@ void loop() {
         memcpy(prevFrame, pixels, (size_t)DETECT_W * DETECT_H);
         prevFrameValid = true;
     }
-
-    // Apply post-threshold to the grayscale buffer (used for the visualization)
-    applyThreshold(pixels, DETECT_W, DETECT_H, contrastThreshold);
 
     // Publish dadinho bbox so the dashboard SVG overlay can draw it in green
     if (matchCount > 0 && diceDetected) {
