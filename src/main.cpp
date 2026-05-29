@@ -647,9 +647,14 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
         calContrastMin, calPixelCount, calBboxW, calBboxH);
 
     // Sample the quiet-scene motion floor inside the ROI so the
-    // frame-differencing trigger has a sensible threshold. Counts pixels with
-    // |Δluma| > motionPixelDelta between consecutive frames; we keep the
-    // peak across 6 samples (worst-case noise) and scale it by 4x + slack.
+    // frame-differencing trigger has a sensible threshold. For each frame we
+    // first compute the mean |Δluma| across the ROI (the DC component — what
+    // a uniform lighting shift looks like) and then count pixels whose
+    // |Δluma| − mean > motionPixelDelta. The subtraction makes the trigger
+    // immune to global brightness swings (clouds, room lights, auto-WB
+    // hiccups) while keeping a localised object (the ball) clearly above
+    // threshold. Peak across 6 samples × 4 + slack gives the absolute
+    // motion-pixel count required to fire.
     if (prevFrame && fb->format == PIXFORMAT_GRAYSCALE) {
         memcpy(prevFrame, fb->buf, (size_t)DETECT_W * DETECT_H);
         prevFrameValid = true;
@@ -662,6 +667,18 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
                 esp_camera_fb_return(f);
                 continue;
             }
+            int npix = rw * rh;
+            long sumD = 0;
+            for (int y = ry; y < ry + rh; y++) {
+                const uint8_t* a = (const uint8_t*)f->buf + y * DETECT_W + rx;
+                const uint8_t* b = (const uint8_t*)prevFrame + y * DETECT_W + rx;
+                for (int x = 0; x < rw; x++) {
+                    int d = (int)a[x] - (int)b[x];
+                    if (d < 0) d = -d;
+                    sumD += d;
+                }
+            }
+            int meanD = npix > 0 ? (int)(sumD / npix) : 0;
             int mc = 0;
             for (int y = ry; y < ry + rh; y++) {
                 const uint8_t* a = (const uint8_t*)f->buf + y * DETECT_W + rx;
@@ -669,7 +686,7 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
                 for (int x = 0; x < rw; x++) {
                     int d = (int)a[x] - (int)b[x];
                     if (d < 0) d = -d;
-                    if (d > motionPixelDelta) mc++;
+                    if (d - meanD > motionPixelDelta) mc++;
                 }
             }
             if (mc > noisePeak) noisePeak = mc;
@@ -1036,18 +1053,35 @@ void loop() {
     else lastRejectReason = "REJECTED";
 
     // Frame-differencing trigger — counts pixels in the ROI whose raw luma
-    // changed by more than motionPixelDelta vs. the previous frame. This
-    // catches a ball that flashes through the ROI in 1-2 frames (too brief
-    // for the edge detector + bbox filter to lock onto).
+    // moved noticeably vs. the previous frame. To stay robust against global
+    // lighting shifts (clouds, room lights, auto-WB hiccups), we first
+    // compute the mean |Δluma| across the ROI and subtract it: a uniform
+    // brightness change has every pixel near the mean, so deviation ≈ 0 and
+    // no pixel exceeds the per-pixel delta. A localised object still spikes
+    // far above the mean and gets counted. Catches balls that flash through
+    // the ROI in 1-2 frames (too brief for the edge detector to lock on).
     int motionCount = 0;
+    int motionMean = 0;
     if (prevFrame && prevFrameValid && motionThreshold > 0) {
+        int npix = rw * rh;
+        long sumD = 0;
         for (int y = ry; y < ry + rh; y++) {
             const uint8_t* a = pixels + y * DETECT_W + rx;
             const uint8_t* b = prevFrame + y * DETECT_W + rx;
             for (int x = 0; x < rw; x++) {
                 int d = (int)a[x] - (int)b[x];
                 if (d < 0) d = -d;
-                if (d > motionPixelDelta) motionCount++;
+                sumD += d;
+            }
+        }
+        motionMean = npix > 0 ? (int)(sumD / npix) : 0;
+        for (int y = ry; y < ry + rh; y++) {
+            const uint8_t* a = pixels + y * DETECT_W + rx;
+            const uint8_t* b = prevFrame + y * DETECT_W + rx;
+            for (int x = 0; x < rw; x++) {
+                int d = (int)a[x] - (int)b[x];
+                if (d < 0) d = -d;
+                if (d - motionMean > motionPixelDelta) motionCount++;
             }
         }
     }
