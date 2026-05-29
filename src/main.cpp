@@ -718,23 +718,43 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
     gameState = STATE_IDLE;
 }
 
-// Sum of Sobel gradient magnitudes inside the ROI — the autotune objective.
-// Optimising this picks exposures with crisp edges anywhere in the ROI, which
-// is exactly what the goal detector consumes. Penalises saturation naturally
-// (clipped highlights are flat → zero gradient) where ROI variance rewarded
-// it. Skips a 1px border so the 3×3 Sobel kernel has full neighbourhood data.
+// Autotune objective: Sobel gradient energy with a multiplicative
+// saturation penalty. The IR LED can't be turned off so the ROI always
+// has a bright hot-spot — gradient-alone would keep pushing exposure up
+// because the hot-spot's rim still has crisp edges. The multiplier
+// punishes that by counting pixels that hit either clip rail:
+//
+//   sat = #pixels with luma ≥ 250 or ≤ 5  (out of N total)
+//   mult = max(0, (N − 3·sat) / N)
+//
+// 0% sat → multiplier 1 (full gradient score)
+// 10% sat → multiplier 0.7
+// 33%+ sat → multiplier 0 (entire frame disqualified)
+//
+// A small dadinho at 240-ish doesn't trigger the penalty; a glowing IR
+// hot-spot covering even 15% of the ROI cuts the score in half. Result:
+// the optimiser settles where the dadinho is crisp AND the surface
+// stays below clip — the auto-contrast behaviour the operator wanted.
 long roiGradEnergy(uint8_t* pixels, int w, int rx, int ry, int rw, int rh) {
     int sx = max(1, rx);
     int sy = max(1, ry);
     int ex = min(w - 2, rx + rw - 1);
     int ey = min(DETECT_H - 2, ry + rh - 1);
-    long sum = 0;
+    long gradSum = 0;
+    int sat = 0;
+    int total = 0;
     for (int y = sy; y <= ey; y++) {
         for (int x = sx; x <= ex; x++) {
-            sum += sobelMag(pixels, x, y, w);
+            uint8_t v = pixels[y * w + x];
+            if (v >= 250 || v <= 5) sat++;
+            total++;
+            gradSum += sobelMag(pixels, x, y, w);
         }
     }
-    return sum;
+    if (total == 0) return 0;
+    long mult_num = (long)total - (long)sat * 3;
+    if (mult_num < 0) mult_num = 0;
+    return gradSum * mult_num / total;
 }
 
 // All sensor knobs the autotune cycles through.
