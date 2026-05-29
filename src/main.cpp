@@ -77,8 +77,10 @@ uint8_t* prevFrame = nullptr;            // PSRAM copy of last raw luma frame
 volatile bool prevFrameValid = false;
 volatile int motionPixelDelta = 30;      // |Δluma| above this counts a pixel as "moving" (/motion-delta)
 volatile int motionThreshold = 0;        // 0 = disabled; pixels-moving needed to fire (/motion-threshold)
+volatile int motionBboxMaxPct = 30;      // reject trigger when motion bbox covers > N% of ROI (/motion-bbox-max)
 volatile int calMotionFloor = 0;         // peak noise motion count observed during cal
 volatile int lastMotion = 0;             // live motion count for diagnostics
+volatile int lastMotionBboxPct = 0;      // live motion bbox area as % of ROI (diagnostic)
 
 // Detection params
 #define COOLDOWN_MS 10000
@@ -1088,6 +1090,8 @@ void loop() {
     // the ROI in 1-2 frames (too brief for the edge detector to lock on).
     int motionCount = 0;
     int motionMean = 0;
+    int motionBboxArea = 0;
+    int motionBboxPct = 0;
     if (prevFrame && prevFrameValid && motionThreshold > 0) {
         int npix = rw * rh;
         long sumD = 0;
@@ -1101,17 +1105,33 @@ void loop() {
             }
         }
         motionMean = npix > 0 ? (int)(sumD / npix) : 0;
-        for (int y = ry; y < ry + rh; y++) {
-            const uint8_t* a = pixels + y * DETECT_W + rx;
-            const uint8_t* b = prevFrame + y * DETECT_W + rx;
+        // Second pass: count motion pixels and track the bbox enclosing them.
+        // A localised ball produces a tight bbox; a non-uniform lighting
+        // change (cloud shadow, room-light gradient, hand sweep) spreads
+        // across most of the ROI even after mean subtraction.
+        int minLX = rw, maxLX = -1, minLY = rh, maxLY = -1;
+        for (int y = 0; y < rh; y++) {
+            const uint8_t* a = pixels + (ry + y) * DETECT_W + rx;
+            const uint8_t* b = prevFrame + (ry + y) * DETECT_W + rx;
             for (int x = 0; x < rw; x++) {
                 int d = (int)a[x] - (int)b[x];
                 if (d < 0) d = -d;
-                if (d - motionMean > motionPixelDelta) motionCount++;
+                if (d - motionMean > motionPixelDelta) {
+                    motionCount++;
+                    if (x < minLX) minLX = x;
+                    if (x > maxLX) maxLX = x;
+                    if (y < minLY) minLY = y;
+                    if (y > maxLY) maxLY = y;
+                }
             }
+        }
+        if (motionCount > 0) {
+            motionBboxArea = (maxLX - minLX + 1) * (maxLY - minLY + 1);
+            motionBboxPct = (npix > 0) ? (motionBboxArea * 100 / npix) : 0;
         }
     }
     lastMotion = motionCount;
+    lastMotionBboxPct = motionBboxPct;
 
     // Compute the goal decision before encoding so isGoal can drive the VAR
     // snapshot capture below.
@@ -1119,7 +1139,11 @@ void loop() {
     detector.frameCount = frameNum;
     bool inCooldown = (now - lastGoalTimeMs) < COOLDOWN_MS;
     bool edgeTrigger = diceDetected && !diceWasPresent && noDiceFrames >= STABLE_FRAMES_NEEDED;
-    bool motionTrigger = (motionThreshold > 0) && (motionCount > motionThreshold);
+    // Motion trigger requires BOTH enough motion pixels AND a compact bbox —
+    // diffuse motion (lighting) gets rejected even when the pixel count is high.
+    bool motionTrigger = (motionThreshold > 0)
+                      && (motionCount > motionThreshold)
+                      && (motionBboxPct <= motionBboxMaxPct);
     bool isGoal = !inCooldown && (edgeTrigger || motionTrigger);
 
     // VAR snapshots — encode TWO raw grayscale JPEGs at quality 80 when isGoal
@@ -1201,12 +1225,16 @@ void loop() {
             else if ((int)matchCount < minPixels) reason = " TOO-SMALL";
             else if (density < 0.12f) reason = " SPARSE";
         }
-        Serial.printf("[detect] %d edges bbox=%dx%d dens=%.0f%% motion=%d/%d (lim:%d-%d bbox<=%d)%s%s%s%s\n",
+        bool motionBboxFail = (motionThreshold > 0) && (motionCount > motionThreshold)
+                              && (motionBboxPct > motionBboxMaxPct);
+        Serial.printf("[detect] %d edges bbox=%dx%d dens=%.0f%% motion=%d/%d mBbox=%d%%/%d%% (lim:%d-%d bbox<=%d)%s%s%s%s%s\n",
             matchCount, bboxW, bboxH, density * 100,
             motionCount, (int)motionThreshold,
+            motionBboxPct, (int)motionBboxMaxPct,
             minPixels, maxPixels, maxBbox,
             diceDetected ? " DICE!" : reason,
             motionTrigger ? " MOTION!" : "",
+            motionBboxFail ? " M-DIFFUSE" : "",
             inCooldown ? " (cd)" : "",
             !diceWasPresent ? "" : " (seen)");
         lastDetectLog = now;

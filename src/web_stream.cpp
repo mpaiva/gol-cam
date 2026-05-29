@@ -55,6 +55,7 @@ extern volatile int curCamCon, curCamBri, curCamSharp;
 extern volatile int diceBboxX, diceBboxY, diceBboxW, diceBboxH;
 extern volatile int motionThreshold, calMotionFloor, lastMotion;
 extern volatile int motionPixelDelta, playStreamSkip;
+extern volatile int motionBboxMaxPct, lastMotionBboxPct;
 extern void requestStart();
 extern void requestPause();
 extern void requestResume();
@@ -132,7 +133,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"curGain\":%d,\"curGceil\":%d,\"curAec\":%d,\"curGma\":%d,\"curLenc\":%d,"
         "\"curCon\":%d,\"curBri\":%d,\"curSharp\":%d,"
         "\"scoreboardIp\":\"%s\","
-        "\"motionTh\":%d,\"motion\":%d,\"calMotion\":%d,\"motionDelta\":%d,\"streamSkip\":%d,"
+        "\"motionTh\":%d,\"motion\":%d,\"calMotion\":%d,\"motionDelta\":%d,\"motionBboxMax\":%d,\"motionBboxPct\":%d,\"streamSkip\":%d,"
         "\"heap\":%u,\"heapMin\":%u,\"psram\":%u,\"psramMin\":%u,\"uptime\":%u}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
@@ -157,7 +158,7 @@ static esp_err_t status_handler(httpd_req_t *req) {
         (int)curCamCon, (int)curCamBri, (int)curCamSharp,
         scoreboardIp,
         (int)motionThreshold, (int)lastMotion, (int)calMotionFloor,
-        (int)motionPixelDelta, (int)playStreamSkip,
+        (int)motionPixelDelta, (int)motionBboxMaxPct, (int)lastMotionBboxPct, (int)playStreamSkip,
         (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
         (unsigned)ESP.getFreePsram(), (unsigned)ESP.getMinFreePsram(),
         (unsigned)(millis() / 1000));
@@ -528,11 +529,29 @@ static esp_err_t stream_skip_handler(httpd_req_t *req) {
     return httpd_resp_send(req, resp, strlen(resp));
 }
 
+static esp_err_t motion_bbox_max_handler(httpd_req_t *req) {
+    char buf[32];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        char val[8];
+        if (httpd_query_key_value(buf, "val", val, sizeof(val)) == ESP_OK) {
+            int v = atoi(val);
+            if (v < 1) v = 1;
+            if (v > 100) v = 100;
+            motionBboxMaxPct = v;
+        }
+    }
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"motionBboxMax\":%d}", motionBboxMaxPct);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
 void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_uri_handlers = 26;
+    config.max_uri_handlers = 27;
     config.max_open_sockets = 10;
     config.lru_purge_enable = true;
     config.stack_size = 8192;
@@ -564,6 +583,7 @@ void startCameraServer() {
         httpd_uri_t motion_delta_uri  = { .uri = "/motion-delta",     .method = HTTP_GET, .handler = motion_delta_handler };
         httpd_uri_t motion_th_uri     = { .uri = "/motion-threshold", .method = HTTP_GET, .handler = motion_threshold_handler };
         httpd_uri_t stream_skip_uri   = { .uri = "/stream-skip",      .method = HTTP_GET, .handler = stream_skip_handler };
+        httpd_uri_t motion_bbox_uri   = { .uri = "/motion-bbox-max",  .method = HTTP_GET, .handler = motion_bbox_max_handler };
         httpd_register_uri_handler(server, &index_uri);
         httpd_register_uri_handler(server, &training_uri);
         httpd_register_uri_handler(server, &match_uri);
@@ -589,6 +609,7 @@ void startCameraServer() {
         httpd_register_uri_handler(server, &motion_delta_uri);
         httpd_register_uri_handler(server, &motion_th_uri);
         httpd_register_uri_handler(server, &stream_skip_uri);
+        httpd_register_uri_handler(server, &motion_bbox_uri);
         Serial.println("Web server started on port 80");
     }
 
