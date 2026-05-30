@@ -152,56 +152,45 @@ TaskHandle_t goalSoundTaskHandle = NULL;
 // Speaker volume: 0-100 (percentage)
 volatile int speakerVolume = 70;
 
-// Pre-generated whistle waveform (allocated in initSpeaker)
+// Pre-generated goal-celebration waveform (allocated in initSpeaker).
+// Currently a single long beep — placeholder while we evaluate replacement
+// audio. Variable name kept as whistleBuf to minimise diff with the I2S
+// playback path below.
 static int16_t* whistleBuf = nullptr;
 static int whistleSamples = 0;
 
-
 static void buildWhistle() {
-    const int blastMs = 180;
-    const int gapMs = 90;
-    const int blastSamples = (GOAL_SAMPLE_RATE * blastMs) / 1000;
-    const int gapSamples = (GOAL_SAMPLE_RATE * gapMs) / 1000;
-    const int total = 3 * blastSamples + 2 * gapSamples;
+    const int durationMs = 1500;
+    const float toneFreq = 1000.0f;
+    const int total = (GOAL_SAMPLE_RATE * durationMs) / 1000;
     whistleBuf = (int16_t*)ps_malloc(total * sizeof(int16_t));
     if (!whistleBuf) {
-        Serial.println("[audio] ERROR: whistle buffer alloc failed");
+        Serial.println("[audio] ERROR: beep buffer alloc failed");
         return;
     }
     whistleSamples = total;
 
-    const float baseFreq = 2700.0f;
-    const float vibratoFreq = 5.0f;
-    const float vibratoDepth = 30.0f;
     const float twoPi = 6.28318530718f;
     const float dt = 1.0f / (float)GOAL_SAMPLE_RATE;
-    const int rampSamples = GOAL_SAMPLE_RATE * 8 / 1000;
+    // 20 ms attack + release prevents the click you get from starting/stopping
+    // on a non-zero sample.
+    const int rampSamples = GOAL_SAMPLE_RATE * 20 / 1000;
 
-    int idx = 0;
-    for (int blast = 0; blast < 3; blast++) {
-        float phase = 0.0f, vphase = 0.0f;
-        for (int n = 0; n < blastSamples; n++) {
-            float env = 1.0f;
-            if (n < rampSamples) env = (float)n / rampSamples;
-            else if (blastSamples - n < rampSamples)
-                env = (float)(blastSamples - n) / rampSamples;
-            float freq = baseFreq + sinf(vphase) * vibratoDepth;
-            float s = sinf(phase) * 0.85f + sinf(phase * 2.0f) * 0.15f;
-            int sample = (int)(s * env * 18000.0f);
-            if (sample > 32767) sample = 32767;
-            if (sample < -32768) sample = -32768;
-            whistleBuf[idx++] = (int16_t)sample;
-            phase += twoPi * freq * dt;
-            if (phase > twoPi) phase -= twoPi;
-            vphase += twoPi * vibratoFreq * dt;
-            if (vphase > twoPi) vphase -= twoPi;
-        }
-        if (blast < 2) {
-            for (int g = 0; g < gapSamples; g++) whistleBuf[idx++] = 0;
-        }
+    float phase = 0.0f;
+    for (int n = 0; n < total; n++) {
+        float env = 1.0f;
+        if (n < rampSamples) env = (float)n / rampSamples;
+        else if (total - n < rampSamples) env = (float)(total - n) / rampSamples;
+        float s = sinf(phase);
+        int sample = (int)(s * env * 20000.0f);
+        if (sample > 32767) sample = 32767;
+        if (sample < -32768) sample = -32768;
+        whistleBuf[n] = (int16_t)sample;
+        phase += twoPi * toneFreq * dt;
+        if (phase > twoPi) phase -= twoPi;
     }
-    Serial.printf("[audio] Whistle pre-generated: %d samples (%d ms)\n",
-        total, total * 1000 / GOAL_SAMPLE_RATE);
+    Serial.printf("[audio] Beep pre-generated: %d samples (%d ms @ %d Hz)\n",
+        total, durationMs, (int)toneFreq);
 }
 
 void goalSoundTask(void* param) {
