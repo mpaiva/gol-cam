@@ -56,6 +56,8 @@ extern volatile int diceBboxX, diceBboxY, diceBboxW, diceBboxH;
 extern volatile int motionThreshold, calMotionFloor, lastMotion;
 extern volatile int motionPixelDelta, playStreamSkip;
 extern volatile int motionBboxMaxPct, lastMotionBboxPct;
+extern volatile int targetU, targetV, colorTol, colorThreshold;
+extern volatile int lastColorMatch, lastColorBboxPct, calColorFloor;
 extern void requestStart();
 extern void requestPause();
 extern void requestResume();
@@ -94,7 +96,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
 }
 
 static esp_err_t status_handler(httpd_req_t *req) {
-    char buf[1700];
+    char buf[1900];
     bool scored = goalJustScored;
     if (scored) goalJustScored = false;
     extern volatile int lastMatchCount, lastBboxW, lastBboxH, lastMinPx, lastMaxPx, lastMaxBbox;
@@ -133,7 +135,9 @@ static esp_err_t status_handler(httpd_req_t *req) {
         "\"curGain\":%d,\"curGceil\":%d,\"curAec\":%d,\"curGma\":%d,\"curLenc\":%d,"
         "\"curCon\":%d,\"curBri\":%d,\"curSharp\":%d,"
         "\"scoreboardIp\":\"%s\","
-        "\"motionTh\":%d,\"motion\":%d,\"calMotion\":%d,\"motionDelta\":%d,\"motionBboxMax\":%d,\"motionBboxPct\":%d,\"streamSkip\":%d,"
+        "\"motionTh\":%d,\"motion\":%d,\"calMotion\":%d,\"motionDelta\":%d,\"motionBboxMax\":%d,\"motionBboxPct\":%d,"
+        "\"calU\":%d,\"calV\":%d,\"colorTol\":%d,\"colorTh\":%d,\"colorMatch\":%d,\"colorBboxPct\":%d,"
+        "\"streamSkip\":%d,"
         "\"heap\":%u,\"heapMin\":%u,\"psram\":%u,\"psramMin\":%u,\"uptime\":%u}",
         detector.goalCount, detector.fps, detector.lastChangeRatio * 100,
         detector.frameCount, scored ? "true" : "false",
@@ -158,7 +162,10 @@ static esp_err_t status_handler(httpd_req_t *req) {
         (int)curCamCon, (int)curCamBri, (int)curCamSharp,
         scoreboardIp,
         (int)motionThreshold, (int)lastMotion, (int)calMotionFloor,
-        (int)motionPixelDelta, (int)motionBboxMaxPct, (int)lastMotionBboxPct, (int)playStreamSkip,
+        (int)motionPixelDelta, (int)motionBboxMaxPct, (int)lastMotionBboxPct,
+        (int)targetU, (int)targetV, (int)colorTol, (int)colorThreshold,
+        (int)lastColorMatch, (int)lastColorBboxPct,
+        (int)playStreamSkip,
         (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMinFreeHeap(),
         (unsigned)ESP.getFreePsram(), (unsigned)ESP.getMinFreePsram(),
         (unsigned)(millis() / 1000));
@@ -529,6 +536,42 @@ static esp_err_t stream_skip_handler(httpd_req_t *req) {
     return httpd_resp_send(req, resp, strlen(resp));
 }
 
+static esp_err_t color_tol_handler(httpd_req_t *req) {
+    char buf[32];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        char val[8];
+        if (httpd_query_key_value(buf, "val", val, sizeof(val)) == ESP_OK) {
+            int v = atoi(val);
+            if (v < 1) v = 1;
+            if (v > 200) v = 200;
+            colorTol = v;
+        }
+    }
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"colorTol\":%d}", colorTol);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
+static esp_err_t color_threshold_handler(httpd_req_t *req) {
+    char buf[32];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        char val[12];
+        if (httpd_query_key_value(buf, "val", val, sizeof(val)) == ESP_OK) {
+            int v = atoi(val);
+            if (v < 0) v = 0;
+            if (v > 100000) v = 100000;
+            colorThreshold = v;
+        }
+    }
+    char resp[64];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"colorTh\":%d}", colorThreshold);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, resp, strlen(resp));
+}
+
 static esp_err_t motion_bbox_max_handler(httpd_req_t *req) {
     char buf[32];
     if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
@@ -551,7 +594,7 @@ void startCameraServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = 80;
     config.ctrl_port = 32768;
-    config.max_uri_handlers = 27;
+    config.max_uri_handlers = 29;
     config.max_open_sockets = 10;
     config.lru_purge_enable = true;
     config.stack_size = 8192;
@@ -584,6 +627,8 @@ void startCameraServer() {
         httpd_uri_t motion_th_uri     = { .uri = "/motion-threshold", .method = HTTP_GET, .handler = motion_threshold_handler };
         httpd_uri_t stream_skip_uri   = { .uri = "/stream-skip",      .method = HTTP_GET, .handler = stream_skip_handler };
         httpd_uri_t motion_bbox_uri   = { .uri = "/motion-bbox-max",  .method = HTTP_GET, .handler = motion_bbox_max_handler };
+        httpd_uri_t color_tol_uri     = { .uri = "/color-tol",        .method = HTTP_GET, .handler = color_tol_handler };
+        httpd_uri_t color_th_uri      = { .uri = "/color-threshold",  .method = HTTP_GET, .handler = color_threshold_handler };
         httpd_register_uri_handler(server, &index_uri);
         httpd_register_uri_handler(server, &training_uri);
         httpd_register_uri_handler(server, &match_uri);
@@ -610,6 +655,8 @@ void startCameraServer() {
         httpd_register_uri_handler(server, &motion_th_uri);
         httpd_register_uri_handler(server, &stream_skip_uri);
         httpd_register_uri_handler(server, &motion_bbox_uri);
+        httpd_register_uri_handler(server, &color_tol_uri);
+        httpd_register_uri_handler(server, &color_th_uri);
         Serial.println("Web server started on port 80");
     }
 

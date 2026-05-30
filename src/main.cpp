@@ -74,7 +74,20 @@ volatile int calBboxW = 0, calBboxH = 0;
 // vs. the previous frame. Calibrated against the quiet-scene noise floor; both
 // the per-pixel delta and the absolute threshold are runtime-tunable via REST.
 uint8_t* prevFrame = nullptr;            // PSRAM copy of last raw luma frame
+uint8_t* lumaBuf  = nullptr;             // per-frame Y plane derived from RGB565 fb
 volatile bool prevFrameValid = false;
+
+// Colour-match trigger — fires when enough ROI pixels match the ball's
+// learned chroma (U, V). Hue-invariant to luma so the IR hot-spot, room
+// lighting, and shadows don't confuse it the way the motion trigger
+// could. Target U/V are sampled at /calibrate.
+volatile int targetU = 0;                // calibrated ball chroma U (-128..127)
+volatile int targetV = 0;                // calibrated ball chroma V (-128..127)
+volatile int colorTol = 28;              // max |Δu|+|Δv| for a pixel to "match"
+volatile int colorThreshold = 0;         // 0 = disabled; pixels-matching needed to fire
+volatile int calColorFloor = 0;          // peak match count seen in quiet calibration scene
+volatile int lastColorMatch = 0;         // live match count
+volatile int lastColorBboxPct = 0;       // live match-bbox area as % of ROI
 volatile int motionPixelDelta = 30;      // |Δluma| above this counts a pixel as "moving" (/motion-delta)
 volatile int motionThreshold = 0;        // 0 = disabled; pixels-moving needed to fire (/motion-threshold)
 volatile int motionBboxMaxPct = 30;      // reject trigger when motion bbox covers > N% of ROI (/motion-bbox-max)
@@ -416,12 +429,17 @@ void setup() {
         Serial.println("WARN: goal snapshot alloc failed");
     }
 
-    // Previous-frame buffer for the motion-difference trigger. QVGA grayscale
-    // = 76 800 B; sits in PSRAM. If alloc fails the motion path stays disabled.
+    // Previous-frame buffer for the motion-difference trigger (Y plane only).
+    // QVGA = 76 800 B; sits in PSRAM. If alloc fails the motion path stays disabled.
     prevFrame = (uint8_t*)ps_malloc(320 * 240);
     if (!prevFrame) Serial.println("WARN: prevFrame alloc failed — motion trigger disabled");
 
-    if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_GRAYSCALE)) {
+    // Luma plane derived from the RGB565 framebuffer each iteration so the
+    // existing Sobel + motion code keeps working on 8-bit Y (no rewrite).
+    lumaBuf = (uint8_t*)ps_malloc(320 * 240);
+    if (!lumaBuf) Serial.println("WARN: lumaBuf alloc failed — detection disabled");
+
+    if (!initCamera(FRAMESIZE_QVGA, PIXFORMAT_RGB565)) {
         Serial.println("FATAL: Camera init failed!");
         while (true) delay(1000);
     }
@@ -431,7 +449,7 @@ void setup() {
         s->set_contrast(s, 1);
         s->set_brightness(s, -1);
         s->set_sharpness(s, 1);
-        s->set_special_effect(s, 2); // grayscale
+        // RGB mode — no grayscale special effect.
         s->set_exposure_ctrl(s, 0);  // manual exposure
         s->set_aec_value(s, 150);
         s->set_aec2(s, 0);
@@ -493,6 +511,37 @@ void computeROI(int &rx, int &ry, int &rw, int &rh) {
     if (ry < 0) ry = 0;
     if (rx + rw > DETECT_W) rx = DETECT_W - rw;
     if (ry + rh > DETECT_H) ry = DETECT_H - rh;
+}
+
+// RGB565 → 8-bit luma plane in lumaBuf. ESP camera stores RGB565 big-endian
+// (hi byte first), so swap when unpacking. Y = (2R + 5G + B) / 8 approximates
+// ITU-R 601 luma with integer math.
+static inline void rgb565ToLuma(const uint8_t* src, uint8_t* dst, int n) {
+    for (int i = 0; i < n; i++) {
+        uint16_t px = ((uint16_t)src[i*2] << 8) | src[i*2 + 1];
+        int r = ((px >> 11) & 0x1F) * 255 / 31;
+        int g = ((px >> 5)  & 0x3F) * 255 / 63;
+        int b =  (px        & 0x1F) * 255 / 31;
+        dst[i] = (uint8_t)((r * 2 + g * 5 + b) >> 3);
+    }
+}
+
+// Decode one RGB565 pixel into 8-bit R/G/B for the colour-match path.
+static inline void rgb565Decode(uint16_t px, int* r, int* g, int* b) {
+    *r = ((px >> 11) & 0x1F) * 255 / 31;
+    *g = ((px >> 5)  & 0x3F) * 255 / 63;
+    *b =  (px        & 0x1F) * 255 / 31;
+}
+
+// Compute chroma (U, V) for a single pixel. Hue-invariant pair — same colour
+// at different brightnesses gives nearly the same (U, V).
+//   Y = (2R + 5G + B) / 8
+//   U = R − Y   (luma-shifted red)
+//   V = B − Y   (luma-shifted blue)
+static inline void rgbToUV(int r, int g, int b, int* u, int* v) {
+    int y = (r * 2 + g * 5 + b) >> 3;
+    *u = r - y;
+    *v = b - y;
 }
 
 // 3x3 Sobel edge detection on grayscale ROI
@@ -584,6 +633,7 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
         calContrastMin = 0; calPixelCount = 0;
         calBboxW = 0; calBboxH = 0;
         motionThreshold = 0; calMotionFloor = 0;
+        colorThreshold = 0; targetU = 0; targetV = 0;
         gameState = STATE_IDLE;
         return;
     }
@@ -618,6 +668,7 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
         calContrastMin = 0; calPixelCount = 0;
         calBboxW = 0; calBboxH = 0;
         motionThreshold = 0; calMotionFloor = 0;
+        colorThreshold = 0; targetU = 0; targetV = 0;
         gameState = STATE_IDLE;
         return;
     }
@@ -648,6 +699,41 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
     Serial.printf("[cal] SUCCESS! Edge threshold=%d, %d edges, bbox=%dx%d\n",
         calContrastMin, calPixelCount, calBboxW, calBboxH);
 
+    // Sample the ball's chroma signature inside the edge-bbox so the
+    // colour-match trigger has a target (U, V). UV is luma-invariant, so the
+    // IR hot-spot (low saturation, high luma) won't fool it and lighting
+    // shifts that mostly change Y barely move the match.
+    if (fb->format == PIXFORMAT_RGB565 && calBboxW > 0 && calBboxH > 0) {
+        long sumU = 0, sumV = 0;
+        int nSamp = 0;
+        const uint8_t* src = (const uint8_t*)fb->buf;
+        for (int y = minY; y <= maxY; y++) {
+            for (int x = minX; x <= maxX; x++) {
+                int idx = (y * DETECT_W + x) * 2;
+                uint16_t px = ((uint16_t)src[idx] << 8) | src[idx + 1];
+                int r, g, b, u, v;
+                rgb565Decode(px, &r, &g, &b);
+                rgbToUV(r, g, b, &u, &v);
+                sumU += u; sumV += v; nSamp++;
+            }
+        }
+        if (nSamp > 0) {
+            targetU = (int)(sumU / nSamp);
+            targetV = (int)(sumV / nSamp);
+            // Set the colour-match trigger threshold proportional to bbox area
+            // (the ball should produce ≥ 30% of the bbox area in matching
+            // pixels). Operator can override via /color-threshold.
+            int bboxArea = calBboxW * calBboxH;
+            colorThreshold = max(20, bboxArea * 30 / 100);
+            Serial.printf("[cal] colour target U=%d V=%d  threshold=%d (bbox %d px)\n",
+                (int)targetU, (int)targetV, (int)colorThreshold, bboxArea);
+            size_t fbLen = strlen(calFeedback);
+            snprintf(calFeedback + fbLen, sizeof(calFeedback) - fbLen,
+                " Colour: U=%d V=%d, trigger>=%d.",
+                (int)targetU, (int)targetV, (int)colorThreshold);
+        }
+    }
+
     // Sample the quiet-scene motion floor inside the ROI so the
     // frame-differencing trigger has a sensible threshold. For each frame we
     // first compute the mean |Δluma| across the ROI (the DC component — what
@@ -657,22 +743,24 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
     // hiccups) while keeping a localised object (the ball) clearly above
     // threshold. Peak across 6 samples × 4 + slack gives the absolute
     // motion-pixel count required to fire.
-    if (prevFrame && fb->format == PIXFORMAT_GRAYSCALE) {
-        memcpy(prevFrame, fb->buf, (size_t)DETECT_W * DETECT_H);
+    if (prevFrame && lumaBuf && fb->format == PIXFORMAT_RGB565) {
+        // pixels here is lumaBuf (already populated by the loop pre-amble).
+        memcpy(prevFrame, pixels, (size_t)DETECT_W * DETECT_H);
         prevFrameValid = true;
         int noisePeak = 0;
         for (int i = 0; i < 6; i++) {
             delay(50);
             camera_fb_t* f = esp_camera_fb_get();
             if (!f) continue;
-            if (f->format != PIXFORMAT_GRAYSCALE || f->len < (size_t)(DETECT_W * DETECT_H)) {
+            if (f->format != PIXFORMAT_RGB565 || f->len < (size_t)(DETECT_W * DETECT_H * 2)) {
                 esp_camera_fb_return(f);
                 continue;
             }
+            rgb565ToLuma(f->buf, lumaBuf, DETECT_W * DETECT_H);
             int npix = rw * rh;
             long sumD = 0;
             for (int y = ry; y < ry + rh; y++) {
-                const uint8_t* a = (const uint8_t*)f->buf + y * DETECT_W + rx;
+                const uint8_t* a = lumaBuf + y * DETECT_W + rx;
                 const uint8_t* b = (const uint8_t*)prevFrame + y * DETECT_W + rx;
                 for (int x = 0; x < rw; x++) {
                     int d = (int)a[x] - (int)b[x];
@@ -683,7 +771,7 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
             int meanD = npix > 0 ? (int)(sumD / npix) : 0;
             int mc = 0;
             for (int y = ry; y < ry + rh; y++) {
-                const uint8_t* a = (const uint8_t*)f->buf + y * DETECT_W + rx;
+                const uint8_t* a = lumaBuf + y * DETECT_W + rx;
                 const uint8_t* b = (const uint8_t*)prevFrame + y * DETECT_W + rx;
                 for (int x = 0; x < rw; x++) {
                     int d = (int)a[x] - (int)b[x];
@@ -692,7 +780,7 @@ void doCalibration(camera_fb_t* fb, uint8_t* pixels) {
                 }
             }
             if (mc > noisePeak) noisePeak = mc;
-            memcpy(prevFrame, f->buf, (size_t)DETECT_W * DETECT_H);
+            memcpy(prevFrame, lumaBuf, (size_t)DETECT_W * DETECT_H);
             esp_camera_fb_return(f);
         }
         calMotionFloor = noisePeak;
@@ -804,13 +892,14 @@ static long captureAndScore(const CamSettings& c, bool pushStreamFrame) {
         if (fb) esp_camera_fb_return(fb);
     }
     camera_fb_t* fb = esp_camera_fb_get();
-    if (!fb || fb->format != PIXFORMAT_GRAYSCALE) {
+    if (!fb || fb->format != PIXFORMAT_RGB565 || !lumaBuf) {
         if (fb) esp_camera_fb_return(fb);
         return 0;
     }
+    rgb565ToLuma(fb->buf, lumaBuf, DETECT_W * DETECT_H);
     int rx, ry, rw, rh;
     computeROI(rx, ry, rw, rh);
-    long score = roiGradEnergy(fb->buf, DETECT_W, rx, ry, rw, rh);
+    long score = roiGradEnergy(lumaBuf, DETECT_W, rx, ry, rw, rh);
     if (pushStreamFrame) {
         uint8_t* jpg_buf = NULL;
         size_t jpg_len = 0;
@@ -927,14 +1016,16 @@ void loop() {
         lastFpsTime = now;
     }
 
-    size_t expectedLen = DETECT_W * DETECT_H;
-    if (fb->format != PIXFORMAT_GRAYSCALE || fb->len < expectedLen) {
+    // Camera is RGB565 (2 bytes/pixel). Derive a Y plane in lumaBuf each frame
+    // so the existing Sobel + motion code keeps reading 8-bit luma at &pixels[idx].
+    size_t expectedLen = (size_t)DETECT_W * DETECT_H * 2;
+    if (fb->format != PIXFORMAT_RGB565 || fb->len < expectedLen || !lumaBuf) {
         esp_camera_fb_return(fb);
         delay(100);
         return;
     }
-
-    uint8_t* pixels = fb->buf;
+    rgb565ToLuma(fb->buf, lumaBuf, DETECT_W * DETECT_H);
+    uint8_t* pixels = lumaBuf;
 
     // Test-fire: simulates a real goal without the detection pipeline so the
     // dashboard can be validated end-to-end (VAR lightbox + scoreboard push +
@@ -1133,6 +1224,44 @@ void loop() {
     lastMotion = motionCount;
     lastMotionBboxPct = motionBboxPct;
 
+    // Colour-match trigger — counts ROI pixels whose chroma (U, V) matches
+    // the ball's calibrated colour, then gates on bbox compactness like
+    // motion does. UV is hue-invariant so this trigger is immune to the IR
+    // hot-spot (low saturation) and to lighting shifts (mostly luma).
+    int colorCount = 0;
+    int colorBboxPct = 0;
+    if (colorThreshold > 0 && fb->format == PIXFORMAT_RGB565) {
+        const uint8_t* src = (const uint8_t*)fb->buf;
+        int tU = targetU, tV = targetV, tol = colorTol;
+        int minLX = rw, maxLX = -1, minLY = rh, maxLY = -1;
+        for (int y = 0; y < rh; y++) {
+            int rowBase = ((ry + y) * DETECT_W + rx) * 2;
+            for (int x = 0; x < rw; x++) {
+                int idx = rowBase + x * 2;
+                uint16_t px = ((uint16_t)src[idx] << 8) | src[idx + 1];
+                int r, g, b, u, v;
+                rgb565Decode(px, &r, &g, &b);
+                rgbToUV(r, g, b, &u, &v);
+                int du = u - tU; if (du < 0) du = -du;
+                int dv = v - tV; if (dv < 0) dv = -dv;
+                if (du + dv <= tol) {
+                    colorCount++;
+                    if (x < minLX) minLX = x;
+                    if (x > maxLX) maxLX = x;
+                    if (y < minLY) minLY = y;
+                    if (y > maxLY) maxLY = y;
+                }
+            }
+        }
+        if (colorCount > 0) {
+            int bArea = (maxLX - minLX + 1) * (maxLY - minLY + 1);
+            int npix = rw * rh;
+            colorBboxPct = (npix > 0) ? (bArea * 100 / npix) : 0;
+        }
+    }
+    lastColorMatch = colorCount;
+    lastColorBboxPct = colorBboxPct;
+
     // Compute the goal decision before encoding so isGoal can drive the VAR
     // snapshot capture below.
     detector.lastChangeRatio = (float)matchCount / (rw * rh);
@@ -1144,7 +1273,11 @@ void loop() {
     bool motionTrigger = (motionThreshold > 0)
                       && (motionCount > motionThreshold)
                       && (motionBboxPct <= motionBboxMaxPct);
-    bool isGoal = !inCooldown && (edgeTrigger || motionTrigger);
+    // Colour trigger uses the same bbox compactness gate as motion.
+    bool colorTrigger = (colorThreshold > 0)
+                     && (colorCount > colorThreshold)
+                     && (colorBboxPct <= motionBboxMaxPct);
+    bool isGoal = !inCooldown && (edgeTrigger || motionTrigger || colorTrigger);
 
     // VAR snapshots — encode TWO raw grayscale JPEGs at quality 80 when isGoal
     // fires:
@@ -1227,16 +1360,18 @@ void loop() {
         }
         bool motionBboxFail = (motionThreshold > 0) && (motionCount > motionThreshold)
                               && (motionBboxPct > motionBboxMaxPct);
-        Serial.printf("[detect] %d edges bbox=%dx%d dens=%.0f%% motion=%d/%d mBbox=%d%%/%d%% (lim:%d-%d bbox<=%d)%s%s%s%s%s\n",
+        bool colorBboxFail  = (colorThreshold > 0)  && (colorCount  > colorThreshold)
+                              && (colorBboxPct  > motionBboxMaxPct);
+        Serial.printf("[detect] e=%d bbox=%dx%d dens=%.0f%% m=%d/%d mBb=%d%% c=%d/%d cBb=%d%%/%d%%%s%s%s%s%s%s\n",
             matchCount, bboxW, bboxH, density * 100,
-            motionCount, (int)motionThreshold,
-            motionBboxPct, (int)motionBboxMaxPct,
-            minPixels, maxPixels, maxBbox,
+            motionCount, (int)motionThreshold, motionBboxPct,
+            colorCount, (int)colorThreshold, colorBboxPct, (int)motionBboxMaxPct,
             diceDetected ? " DICE!" : reason,
             motionTrigger ? " MOTION!" : "",
+            colorTrigger ? " COLOUR!" : "",
             motionBboxFail ? " M-DIFFUSE" : "",
-            inCooldown ? " (cd)" : "",
-            !diceWasPresent ? "" : " (seen)");
+            colorBboxFail ? " C-DIFFUSE" : "",
+            inCooldown ? " (cd)" : "");
         lastDetectLog = now;
     }
 
@@ -1257,11 +1392,16 @@ void loop() {
         delay(300);
         digitalWrite(LED_PIN, LOW);
 
-        const char* trigSrc = motionTrigger ? (edgeTrigger ? "edge+motion" : "motion")
-                                            : "edge";
-        Serial.printf("GOAL #%d! (%d edges, %d motion, src=%s, threshold edge>=%d motion>=%d)\n",
-            detector.goalCount, matchCount, motionCount, trigSrc,
-            (int)calContrastMin, (int)motionThreshold);
+        // Source = first letter of each firing trigger: e (edge), m (motion), c (colour)
+        char trigSrc[8] = {0};
+        int ti = 0;
+        if (edgeTrigger)   trigSrc[ti++] = 'e';
+        if (motionTrigger) trigSrc[ti++] = 'm';
+        if (colorTrigger)  trigSrc[ti++] = 'c';
+        Serial.printf("GOAL #%d! src=%s (edges=%d motion=%d colour=%d  th edge>=%d motion>=%d colour>=%d)\n",
+            detector.goalCount, trigSrc,
+            matchCount, motionCount, colorCount,
+            (int)calContrastMin, (int)motionThreshold, (int)colorThreshold);
     }
 
     if (diceDetected) {
