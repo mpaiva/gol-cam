@@ -69,6 +69,16 @@ SCOREBOARD_IP=192.168.0.110     # placar IP (camera pushes here)
 
 `load_env.py` reads `.env` and injects each whitelisted variable as a `-D` build define. Different boards therefore need different `.env` values at flash time.
 
+**IP scheme in use** (kept in `.env`, not git-tracked):
+
+| Board | IP | Build defines set before flash |
+|---|---|---|
+| Placar | `192.168.40.89` | `SCOREBOARD_STATIC_IP=192.168.40.89` (already permanent in `.env`) |
+| Cam A (side A) | `192.168.40.90` | `WIFI_STATIC_IP=192.168.40.90` (BOARD_ROLE unset → default side A) |
+| Cam B (side B) | `192.168.40.91` | `WIFI_STATIC_IP=192.168.40.91` + `BOARD_ROLE=home` |
+
+`SCOREBOARD_IP=192.168.40.89` in `.env` is permanent — both cameras push goals there.
+
 ## Architecture
 
 ### Camera board
