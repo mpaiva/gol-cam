@@ -1,6 +1,6 @@
 # gol-cam
 
-Sistema eletrônico completo para **futebol de botão**: uma câmera que detecta gols por visão computacional, um placar de LED que mostra a contagem e um conjunto de peças impressas em 3D que une tudo. Construído para a variante **Dadinho** — o pequeno dado de 4-6 mm usado como bola.
+Sistema eletrônico completo para **futebol de botão**: uma câmera que detecta gols por visão computacional, um placar de LED que mostra a contagem e um conjunto de peças impressas em 3D que une tudo. A detecção atual combina três sinais — **cor (HSV), movimento (frame-differencing)** e **bordas (Sobel)** — calibrados em conjunto a partir de uma única captura da bola colocada no gol.
 
 ## Visão geral do sistema
 
@@ -19,7 +19,7 @@ Três componentes coordenados em um único repositório:
                   │  Smartphone  │
                   │  / tablet    │
                   └───────┬──────┘
-                          │ Painel HTTP (navegador faz polling)
+                          │ Painel HTTP
                           │
        ┌──────────────────┼──────────────────┐
        │                  │                  │
@@ -28,28 +28,57 @@ Três componentes coordenados em um único repositório:
 │ Câmera A   │     │ Câmera B   │     │ Placar     │
 │ DFR1154    │     │ DFR1154    │     │ ESP32 +    │
 │ side=A     │     │ side=B     │     │ MAX7219    │
+│ .40.90     │     │ .40.91     │     │ .40.89     │
 └──────┬─────┘     └──────┬─────┘     └─────▲──────┘
        │                  │                 │
        └──────────────────┴─────────────────┘
-              POST /goal {"side":"A|B"}   na detecção
-              (fallback de polling do placar @500 ms via /status)
+              GET /goal?side=a|b       na detecção
+              GET /goal-undo?side=a|b  na anulação VAR
 ```
 
-Para uma configuração com apenas uma câmera, omita a Câmera B e o `PEER_IP` do placar. O placar também pode operar de forma **autônoma** — se a conexão WiFi falhar, ele volta para o modo AP `PLACAR_WIFI` (192.168.4.1), e os 4 botões físicos continuam funcionando.
+Para uma configuração com apenas uma câmera, omita a Câmera B. O placar e a câmera trabalham apenas em modo STA (sem fallback AP); se o WiFi cair, a câmera não consegue empurrar o gol, mas os 4 botões físicos no placar continuam funcionando para placar manual.
+
+**Esquema de IP estático sugerido** (define em `.env` via `WIFI_STATIC_IP` / `SCOREBOARD_STATIC_IP`):
+
+| Placa | IP |
+|---|---|
+| Placar | `192.168.40.89` |
+| Câmera A (side A) | `192.168.40.90` |
+| Câmera B (side B, `BOARD_ROLE=home`) | `192.168.40.91` |
 
 ## Como funciona a detecção
 
-Um DFR1154 (ESP32-S3 + câmera grande-angular OV3660) observa a área do gol. Você calibra colocando o dadinho no campo de visão, e o sistema aprende a assinatura de bordas dele. Durante a partida, ele detecta o cubo entrando no gol, captura uma foto, toca um som de comemoração pelo alto-falante I2S, envia o evento de gol para o placar e mantém a contagem — tudo via WiFi.
+Um DFR1154 (ESP32-S3 + câmera grande-angular OV3660) observa a área do gol em **RGB565 QVGA (320×240)**. Você calibra colocando a bola dentro da ROI, e o sistema aprende três assinaturas ao mesmo tempo:
+
+1. **Bordas (Sobel)** — limiar de gradiente que descreve o silhueta da bola
+2. **Cor (UV / HSV)** — par de chroma `(U, V)` médio dos pixels dentro do bbox, hue-invariante a mudanças de luma
+3. **Movimento (frame-differencing)** — limiar de "piso de ruído" amostrado durante a calibração
+
+Durante a partida, cada frame passa por três disparadores em paralelo, todos compartilhando o cooldown de 10 s:
+
+- **Bordas** — dispara quando o silhueta aparece e desaparece, formato/tamanho dentro da bbox calibrada
+- **Movimento** — conta pixels da ROI cuja luma mudou > limiar vs. o frame anterior, *após subtração da média* (DC removal) para ignorar variações uniformes de luz, e *após filtro de bbox compacto* (≤ 30 % da ROI) para rejeitar variações de luz não-uniformes ou sombras de mão
+- **Cor** — conta pixels da ROI cuja chroma `(u, v)` está dentro da tolerância em torno do alvo calibrado; mesmo filtro de bbox compacto
+
+O OR dos três triggers dispara o gol. O log serial `[detect]` mostra os três contadores (`e=`, `m=`, `c=`) e qual dispara, e o `GOAL #N` registra a fonte (`src=emc`, `src=mc`, etc.).
+
+**Efeitos colaterais a cada gol:**
+- Beep de 1,5 s @ 1 kHz pelo alto-falante I2S (placeholder — será substituído)
+- LED IR pisca
+- VAR captura *dois* snapshots: o frame de disparo (`/goal-snapshot`) e o frame anterior (`/goal-snapshot-prev`) — útil quando o trigger é por movimento e a bola já saiu do quadro no frame de disparo
+- Push HTTP para o placar: `GET /goal?side=a|b`
+
+**VAR (revisão de vídeo):** abrindo qualquer entrada no log de gols, o lightbox mostra os dois frames lado a lado ("Antes" / "Disparo"). Os botões "Foi Gol" mantém; "Anula" decrementa o `goalCount` da câmera **e** dispara `GET /goal-undo?side=a|b` no placar, mantendo o display em sincronia.
 
 Recursos:
-- Stream MJPEG ao vivo da câmera
-- Calibração em um clique com feedback visual
-- Detecção automática de gols com cooldown de 10 segundos
-- Registro de fotos dos gols com horário
-- Sistema de revisão tipo VAR (árbitro de vídeo)
-- Controles de jogo: pausar, retomar, reiniciar, encerrar partida
+- Stream MJPEG ao vivo (a cores)
+- Calibração em um clique aprende bordas + cor + ruído de movimento
+- Detecção automática de gols com cooldown de 10 s
+- Lightbox VAR de dois frames com sincronização do placar na anulação
+- Endpoints REST para ajuste em tempo real: `/motion-delta`, `/motion-threshold`, `/motion-bbox-max`, `/color-tol`, `/color-threshold`, `/stream-skip`
+- Controles de jogo: iniciar, pausar, retomar, encerrar, reiniciar
 - Placar físico de LED com botões de override manual
-- Operação autônoma do placar quando a câmera está offline
+- `/test-fire` simula um gol completo (snapshot VAR + áudio + push) para testar o pipeline sem a bola
 
 ## Futebol de Botão e o Dadinho no Rio de Janeiro
 
@@ -89,13 +118,15 @@ O Dadinho foi oficialmente reconhecido pela Confederação Brasileira de Futebol
 
 ### Fiação do placar (ESP32 DevKit V1)
 
+Os macros estão inline no topo de `src_scoreboard/scoreboard.cpp`.
+
 **Display A** (placar da esquerda, 2 módulos em cadeia, DOUT → DIN):
 
-| MAX7219 | GPIO | Macro (`include/pins_placar.h`) |
+| MAX7219 | GPIO | Macro |
 |---|---|---|
-| DIN | 23 | `PLACAR_DIN_A` |
-| CLK | 18 | `PLACAR_CLK_A` |
-| CS  | 5  | `PLACAR_CS_A`  |
+| DIN | 23 | `DIN1` |
+| CLK | 18 | `CLK1` |
+| CS  | 5  | `CS1`  |
 | VCC | 5V (VIN) | — |
 | GND | GND | — |
 
@@ -103,18 +134,18 @@ O Dadinho foi oficialmente reconhecido pela Confederação Brasileira de Futebol
 
 | MAX7219 | GPIO | Macro |
 |---|---|---|
-| DIN | 19 | `PLACAR_DIN_B` |
-| CLK | 21 | `PLACAR_CLK_B` |
-| CS  | 22 | `PLACAR_CS_B`  |
+| DIN | 19 | `DIN2` |
+| CLK | 21 | `CLK2` |
+| CS  | 22 | `CS2`  |
 
 **Botões** (cada um do GPIO ao GND, `INPUT_PULLUP` — sem resistores externos):
 
 | Botão | GPIO | Macro | Ação |
 |---|---|---|---|
-| UP A | 32 | `PLACAR_BTN_UP_A` | Incrementa lado A |
-| DW A | 33 | `PLACAR_BTN_DW_A` | Zera lado A |
-| UP B | 25 | `PLACAR_BTN_UP_B` | Incrementa lado B |
-| DW B | 26 | `PLACAR_BTN_DW_B` | Zera lado B |
+| UP A | 32 | `UP1` | Incrementa lado A |
+| DW A | 33 | `DW1` | Zera lado A |
+| UP B | 25 | `UP2` | Incrementa lado B |
+| DW B | 26 | `DW2` | Zera lado B |
 
 ### Pinagem da câmera
 
@@ -167,19 +198,23 @@ Crie um arquivo `.env` na raiz do projeto (ignorado pelo git):
 WIFI_SSID=nome-da-sua-rede
 WIFI_PASSWORD=sua-senha
 
-# Opcional — IPs estáticos ajudam no modo match
-WIFI_STATIC_IP=192.168.0.100
-WIFI_GATEWAY=192.168.0.1
-WIFI_SUBNET=255.255.255.0
+# IP do placar — todas as câmeras empurram gols para cá (recomendado: estático)
+SCOREBOARD_IP=192.168.40.89
+SCOREBOARD_STATIC_IP=192.168.40.89
+SCOREBOARD_GATEWAY=192.168.40.1
+SCOREBOARD_SUBNET=255.255.255.0
 
-# Opcional — tags de papel para o modo match
-BOARD_ROLE=goal_a            # ou goal_b, single, scoreboard
-PEER_IP=192.168.0.101        # IP da outra câmera (modo match)
-SCOREBOARD_IP=192.168.0.110  # IP do placar (câmera envia gols para cá)
-CAMERA_IP=192.168.0.100      # IP da câmera (placar faz polling como fallback)
+# Per-board (definir antes de gravar cada câmera; valores comentados são exemplos)
+# Câmera A (side A — padrão):  WIFI_STATIC_IP=192.168.40.90, BOARD_ROLE não definido
+# Câmera B (side B):            WIFI_STATIC_IP=192.168.40.91, BOARD_ROLE=home
+WIFI_GATEWAY=192.168.40.1
+WIFI_SUBNET=255.255.255.0
+# WIFI_STATIC_IP=192.168.40.90
+# BOARD_ROLE=home              # home → side B; ausente → side A
+# SCOREBOARD_SIDE=b            # override explícito (a|b), tem prioridade sobre BOARD_ROLE
 ```
 
-`load_env.py` lê esses valores e injeta como `-D` defines de build, então são compilados no firmware. Placas diferentes precisam de valores `.env` diferentes — grave uma, altere o `.env`, grave a próxima.
+`load_env.py` lê esses valores e injeta como `-D` defines de build, então são compilados no firmware. Como `WIFI_STATIC_IP` e `BOARD_ROLE` precisam ser diferentes em cada câmera, ajuste-os antes de cada gravação.
 
 ### Passo 4 — Compilar e gravar
 
@@ -217,12 +252,12 @@ O placar serve sua própria interface simples no IP dele (incremento/reset manua
 4. **Revisão VAR** — clique em qualquer entrada de gol para confirmar ou anular (gols anulados subtraem do lado certo)
 5. **Pausar / retomar / reiniciar / encerrar** — controles atingem todas as placas simultaneamente
 
-### Fallback do placar (sem câmera ou câmera offline)
+### Placar autônomo (sem câmera)
 
-Se a câmera estiver inacessível, o placar continua funcionando:
-- WiFi STA falhou → modo AP `PLACAR_WIFI` / `12345678`, abra `http://192.168.4.1`
-- Botões físicos sempre funcionam (UP / RESET por lado)
-- A interface web manual espelha os botões
+Mesmo com as câmeras offline ou desligadas, o placar continua funcionando:
+- Botões físicos sempre funcionam (UP A/B, RESET A/B)
+- A interface web em `http://192.168.40.89/` espelha os botões + adiciona `/api/reset`
+- Endpoints REST disponíveis para o placar: `/goal?side=a|b` (+1), `/goal-undo?side=a|b` (−1, com piso em 0), `/a+`, `/b+`, `/az`, `/bz`, `/reset`, `/api/reset`, `/status`
 
 ## Estrutura do repositório
 
@@ -231,22 +266,19 @@ gol-cam/
 ├── platformio.ini              # Dois ambientes: dfr1154 + placar
 ├── partitions.csv              # Layout de 16 MB de flash para a câmera
 ├── load_env.py                 # .env → -D defines de build
-├── .env                        # WiFi + overrides de papel/IP (ignorado pelo git)
+├── .env                        # WiFi + IP estático + role (ignorado pelo git)
 ├── include/
 │   ├── camera.h, pins.h        # Câmera (DFR1154)
-│   ├── frame_store.h, goal_detector.h, gol_sound*.h
-│   ├── pins_placar.h           # GPIOs do placar
-│   ├── placar_display.h        # Driver MAX7219
-│   ├── placar_buttons.h        # Leitor de botões com debounce
-│   └── placar_web.h            # Contrato do servidor HTTP do placar
+│   ├── frame_store.h           # Buffer JPEG thread-safe para o stream MJPEG
+│   └── goal_detector.h         # Struct GoalDetector (contadores, FPS)
 ├── src/
-│   ├── main.cpp                # Entry da câmera + loop de detecção + push de gol
+│   ├── main.cpp                # Câmera: loop de detecção (bordas + movimento + cor)
 │   ├── web_stream.cpp          # Servidor HTTP da câmera (esp_http_server)
-│   ├── mode_select.h, training_dashboard.h, match_dashboard.h
-│   ├── main_placar.cpp         # Entry do placar + WiFi/AP + polling da câmera
-│   ├── placar_display.cpp      # Renderização MAX7219
-│   ├── placar_buttons.cpp      # Debounce dos botões
-│   └── placar_web.cpp          # WebServer do placar + /goal /sync /status
+│   ├── mode_select.h           # HTML do seletor Training / Match
+│   ├── training_dashboard.h    # HTML/JS do painel de treino (uma câmera)
+│   └── match_dashboard.h       # HTML/JS do painel de partida (duas câmeras)
+├── src_scoreboard/
+│   └── scoreboard.cpp          # Placar: firmware monolítico (WiFi + MAX7219 + HTTP + botões)
 ├── hardware/                   # Caixas impressas em 3D
 ├── .about/                     # Proposta de valor, feature requests
 ├── .plans/                     # Planos de implementação, notas de sessão
