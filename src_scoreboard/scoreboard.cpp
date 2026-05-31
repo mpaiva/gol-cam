@@ -119,6 +119,8 @@ static void atualizarDisplays() {
 // ---------- Score control ----------
 static void sobeA() { if (contA < 99) { contA++; atualizarDisplays(); } }
 static void sobeB() { if (contB < 99) { contB++; atualizarDisplays(); } }
+static void desceA() { if (contA > 0) { contA--; atualizarDisplays(); } }
+static void desceB() { if (contB > 0) { contB--; atualizarDisplays(); } }
 static void zeraA() { contA = 0; atualizarDisplays(); }
 static void zeraB() { contB = 0; atualizarDisplays(); }
 static void resetGeral() { contA = 0; contB = 0; atualizarDisplays(); }
@@ -305,6 +307,24 @@ static void handleGoal() {
   sendJson(200, body);
 }
 
+// VAR annul — undoes one goal on the chosen side. Camera's /deduct handler
+// fires this so the placar stays in sync with the local goalCount after a
+// goal is voided in the lightbox review.
+//   GET /goal-undo?side=a   → −1 from A (floored at 0)
+//   GET /goal-undo?side=b   → −1 from B
+static void handleGoalUndo() {
+  String side = server.arg("side");
+  side.toLowerCase();
+  if (side == "a")      { desceA(); }
+  else if (side == "b") { desceB(); }
+  else {
+    sendJson(400, "{\"ok\":false,\"err\":\"side must be a or b\"}");
+    return;
+  }
+  String body = "{\"ok\":true,\"side\":\"" + side + "\",\"a\":" + contA + ",\"b\":" + contB + "}";
+  sendJson(200, body);
+}
+
 // New: status endpoint for dashboard polling.
 static void handleStatus() {
   String body = "{\"role\":\"scoreboard\",\"a\":" + String(contA) + ",\"b\":" + String(contB) +
@@ -406,6 +426,7 @@ void setup() {
 
   // New programmatic API for the gol-cams + dashboards
   server.on("/goal", handleGoal);
+  server.on("/goal-undo", handleGoalUndo);
   server.on("/status", handleStatus);
   server.on("/api/reset", handleResetApi);
 

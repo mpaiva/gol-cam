@@ -286,28 +286,37 @@ static void resolveScoreboardSide() {
 
 #ifdef SCOREBOARD_IP
 // Background HTTP push so the goal-detection loop never blocks on the network.
-// The task self-deletes after firing one request.
+// The task self-deletes after firing one request. `route` selects which placar
+// endpoint to hit ("goal" for + 1, "goal-undo" for − 1).
+struct ScoreboardPushArgs { char side; const char* route; };
 static void scoreboardPushTask(void* param) {
-    char side = (char)(intptr_t)param;
+    ScoreboardPushArgs* a = (ScoreboardPushArgs*)param;
     HTTPClient http;
-    String url = String("http://") + SCOREBOARD_IP + "/goal?side=" + side;
+    String url = String("http://") + SCOREBOARD_IP + "/" + a->route + "?side=" + a->side;
     if (http.begin(url)) {
         http.setTimeout(2000);
         int code = http.GET();
-        Serial.printf("[score] push side=%c → HTTP %d\n", side, code);
+        Serial.printf("[score] %s side=%c → HTTP %d\n", a->route, a->side, code);
         http.end();
     } else {
         Serial.println("[score] http.begin failed");
     }
+    delete a;
     vTaskDelete(NULL);
 }
 
 void pushGoalToScoreboard() {
-    xTaskCreatePinnedToCore(scoreboardPushTask, "scorePush", 4096,
-                            (void*)(intptr_t)scoreboardSide, 1, NULL, 0);
+    ScoreboardPushArgs* a = new ScoreboardPushArgs{scoreboardSide, "goal"};
+    xTaskCreatePinnedToCore(scoreboardPushTask, "scorePush", 4096, (void*)a, 1, NULL, 0);
+}
+
+void pushGoalUndoToScoreboard() {
+    ScoreboardPushArgs* a = new ScoreboardPushArgs{scoreboardSide, "goal-undo"};
+    xTaskCreatePinnedToCore(scoreboardPushTask, "scoreUndo", 4096, (void*)a, 1, NULL, 0);
 }
 #else
 void pushGoalToScoreboard() {}  // SCOREBOARD_IP not configured → no-op
+void pushGoalUndoToScoreboard() {}
 #endif
 
 void initSpeaker() {
@@ -378,6 +387,9 @@ void requestDeduct() {
     if (detector.goalCount > 0) {
         detector.goalCount--;
         Serial.printf("[VAR] Gol annulled! Score now %d\n", detector.goalCount);
+        // Mirror on the placar so the LED matrix stays in sync with the local
+        // count. Fires the same side this camera advances on a goal.
+        pushGoalUndoToScoreboard();
     }
 }
 
