@@ -4,10 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-**gol-cam** — A two-board electronic system for futebol de botao (button soccer):
+**gol-cam** — A three-board electronic system for futebol de botao (button soccer):
 
-1. **Camera board** (DFR1154 / ESP32-S3) — detects goals via edge-based computer vision, plays celebration audio, serves training and match web dashboards.
+1. **Camera board** (DFR1154 / ESP32-S3) — detects goals via colour + motion + edge triggers, plays a celebration beep, serves training and match web dashboards.
 2. **Placar board** (ESP32 DevKit + 4× MAX7219) — physical LED scoreboard, increments on camera push or manual button override.
+3. **CrowPanel HMI** (ESP32-S3 + 5" 800×480 capacitive touch) — *optional* touchscreen placar / operator surface. Phase 1 (current) just mirrors the MAX7219 placar over HTTP; Phase 2 adds LVGL rendering and on-screen calibrate/start/VAR controls.
 
 Both firmwares live in this single PlatformIO project; `hardware/` holds the 3D-printable enclosures imported from the auxiliary `GOOOL Elatronico` project. The original `Placar Eletronico` project was consolidated into this repo on 2026-05-24 — see `.plans/consolidation-plan.md`.
 
@@ -40,9 +41,13 @@ pio run -e dfr1154
 # Build the placar
 pio run -e placar
 
+# Build the CrowPanel touchscreen HMI (alternative placar / operator surface)
+pio run -e crowpanel_hmi
+
 # Upload via USB
-pio run -e dfr1154 -t upload   # plug in the DFR1154
-pio run -e placar -t upload    # plug in the ESP32 DevKit
+pio run -e dfr1154 -t upload          # plug in the DFR1154
+pio run -e placar -t upload           # plug in the ESP32 DevKit
+pio run -e crowpanel_hmi -t upload    # plug in the CrowPanel DIS07050H
 
 # Serial monitor (look for "Dashboard: http://...")
 pio device monitor
@@ -132,9 +137,10 @@ The camera reports its `"side"` in `/status`, resolved at boot from `SCOREBOARD_
 
 ## Board config
 
-- `platformio.ini` — Two environments:
-  - `[env:dfr1154]` — `esp32-s3-devkitc-1`, 16 MB flash, OPI PSRAM, custom `partitions.csv`. Compiles `src/` only (excludes `../src_scoreboard/`).
+- `platformio.ini` — Three environments:
+  - `[env:dfr1154]` — `esp32-s3-devkitc-1`, 16 MB flash, OPI PSRAM, custom `partitions.csv`. Compiles `src/` only (excludes `../src_scoreboard/` + `../src_hmi/`).
   - `[env:placar]` — `esp32dev`, depends on `majicdesigns/MD_MAX72XX@^3.5.0`. Compiles `../src_scoreboard/` only (excludes `src/`).
+  - `[env:crowpanel_hmi]` — `esp32-s3-devkitc-1`, 4 MB flash, OPI PSRAM, default partition. Compiles `../src_hmi/` only (excludes `src/`). Phase 1 is a passive polling mirror of the MAX7219 placar; LVGL + LovyanGFX are queued for Phase 2 once the display init is hardware-validated.
 - `partitions.csv` — Custom partition layout for the 16 MB flash on the DFR1154
 - `load_env.py` — PlatformIO pre-script that reads `.env` and injects whitelisted variables as `CPPDEFINES`: `WIFI_SSID`, `WIFI_PASSWORD`, `WIFI_STATIC_IP`, `WIFI_GATEWAY`, `WIFI_SUBNET`, `BOARD_ROLE`, `PEER_IP`, `CAMERA_IP`, `SCOREBOARD_IP`, `SCOREBOARD_SIDE`, `SCOREBOARD_STATIC_IP`, `SCOREBOARD_GATEWAY`, `SCOREBOARD_SUBNET`.
 
