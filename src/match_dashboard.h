@@ -401,6 +401,7 @@ function connect(){
   const h=$('ip-home').value.trim(),a=$('ip-away').value.trim(),p=$('ip-placar').value.trim();
   if(!h||!a){$('cfg-msg').textContent=t('match.enter_both');return;}
   boards.home.ip=h;boards.away.ip=a;boards.placar.ip=p;
+  scoreboardIp=p;
   localStorage.setItem('gol-match',JSON.stringify({home:h,away:a,placar:p}));
   $('config').style.display='none';
   $('scoreboard').style.display='block';
@@ -474,8 +475,17 @@ async function pollBoard(side){
 }
 
 function updateControls(){
-  $('score-home').textContent=boards.away.goals;
-  $('score-away').textContent=boards.home.goals;
+  // Show the placar's a/b on the green digits so the dashboard mirrors the
+  // physical LED matrix (the source of truth visible to everyone in the room).
+  // Falls back to the cameras' local goalCount when the placar is unreachable
+  // — better than displaying 0 for both during a brief WiFi blip.
+  if(boards.placar.online){
+    $('score-home').textContent=boards.placar.a;
+    $('score-away').textContent=boards.placar.b;
+  } else {
+    $('score-home').textContent=boards.away.goals;
+    $('score-away').textContent=boards.home.goals;
+  }
   const anyPlaying=boards.home.state===2||boards.away.state===2;
   const anyPaused=boards.home.state===3||boards.away.state===3;
   const inGame=anyPlaying||anyPaused;
