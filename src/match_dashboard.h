@@ -290,7 +290,7 @@ background:#0f0f0f;color:var(--muted);cursor:pointer;font-weight:bold}
 <button class='btn btn-start' id='btn-start' onclick='matchCmd("start")' data-i18n='match.start'>▶ Start Match</button>
 <button class='btn btn-pause' id='btn-pause' onclick='matchCmd("pause")' style='display:none' data-i18n='match.pause'>Pause</button>
 <button class='btn btn-resume' id='btn-resume' onclick='matchCmd("resume")' style='display:none' data-i18n='match.resume'>Resume</button>
-<button class='btn btn-reset' id='btn-reset' onclick='matchReset()' data-i18n='match.reset'>Reset</button>
+<button class='btn btn-reset' id='btn-reset' onclick='matchReset()' data-i18n='match.reset'>Reset All</button>
 <button class='btn btn-end' id='btn-stop' onclick='matchCmd("stop")' style='display:none' data-i18n='match.end'>End Match</button>
 </div>
 </div>
@@ -319,7 +319,7 @@ en:{
 'match.expert':'⚙ Expert',
 'match.cam_section':'Camera','match.audio_section':'Audio',
 'match.start':'▶ Start Match','match.pause':'Pause','match.resume':'Resume',
-'match.reset':'Reset','match.end':'End Match',
+'match.reset':'Reset All','match.end':'End Match',
 'match.offline':'OFFLINE','match.ready':'READY','match.idle':'IDLE',
 'match.cal_state':'CAL...','match.playing':'PLAYING','match.paused':'PAUSED',
 'match.goal_num':'GOL #%d (%s)',
@@ -346,7 +346,7 @@ pt:{
 'match.expert':'⚙ Avançado',
 'match.cam_section':'Câmera','match.audio_section':'Áudio',
 'match.start':'▶ Iniciar','match.pause':'Pausar','match.resume':'Continuar',
-'match.reset':'Reiniciar','match.end':'Encerrar',
+'match.reset':'Reiniciar Tudo','match.end':'Encerrar',
 'match.offline':'OFFLINE','match.ready':'PRONTO','match.idle':'AGUARDANDO',
 'match.cal_state':'CAL...','match.playing':'JOGANDO','match.paused':'PAUSADO',
 'match.goal_num':'GOL #%d (%s)',
