@@ -61,14 +61,22 @@ Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
     pins::LCD_R0, pins::LCD_R1, pins::LCD_R2, pins::LCD_R3, pins::LCD_R4,
     pins::LCD_G0, pins::LCD_G1, pins::LCD_G2, pins::LCD_G3, pins::LCD_G4, pins::LCD_G5,
     pins::LCD_B0, pins::LCD_B1, pins::LCD_B2, pins::LCD_B3, pins::LCD_B4,
-    1, 8, 4, 8,    // hsync_polarity, hsync_front_porch, hsync_pulse_width, hsync_back_porch
-    1, 8, 4, 8,    // vsync_polarity, vsync_front_porch, vsync_pulse_width, vsync_back_porch
-    1,             // pclk_active_neg
-    14000000       // prefer_speed (14 MHz — conservative)
+    // Standard ILI6122 / RGB-800x480 timing: wider back porches than the
+    // library defaults so each line has enough settle time before the
+    // pixel data arrives. With 8/4/8 we were getting only half the
+    // panel rendered; 8/4/43 (H) + 8/4/12 (V) is the manufacturer-recommended config.
+    1, 8, 4, 43,   // hsync_polarity, hsync_front_porch, hsync_pulse_width, hsync_back_porch
+    1, 8, 4, 12,   // vsync_polarity, vsync_front_porch, vsync_pulse_width, vsync_back_porch
+    1,             // pclk_active_neg (restored to 1 — the right-half banding from
+                   // before was the half-rendering issue, not a true polarity problem)
+    16000000       // prefer_speed (16 MHz — matches Elecrow reference config)
 );
 
+// The constructor's rotation arg is unreliable for direct RGB panels in
+// this library version — setRotation() is called explicitly in setup()
+// after begin() so the framebuffer is actually flipped before drawing.
 Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
-    800, 480, rgbpanel, 0 /*rotation*/, true /*auto_flush*/);
+    800, 480, rgbpanel, 0 /*rotation set in setup()*/, true /*auto_flush*/);
 
 // Latest score read from the placar.
 static volatile int placarA = -1;       // -1 forces a redraw on the first poll
@@ -133,31 +141,31 @@ static void renderScore() {
     snprintf(b, sizeof(b), "%d", placarB < 0 ? 0 : placarB);
 
     // Built-in 5x7 font at setTextSize(20) → 100 wide × 140 tall per character.
-    // A 1- or 2-digit score sits comfortably in the 0..380 / 420..800 columns.
+    // Layout: digit A centred at x=200, ×  at x=400 (true centre), digit B at x=600.
     gfx->setTextSize(20);
     gfx->setTextColor(COL_SCORE, COL_BG);
 
-    int aw = (int)strlen(a) * 100;
-    int bw = (int)strlen(b) * 100;
-    int yDigit = 130;
-    gfx->setCursor(190 - aw/2, yDigit);  // centred in the left half
+    const int yDigit = 140;
+    const int aw = (int)strlen(a) * 100;
+    const int bw = (int)strlen(b) * 100;
+    gfx->setCursor(200 - aw/2, yDigit);
     gfx->print(a);
-    gfx->setCursor(610 - bw/2, yDigit);  // centred in the right half
+    gfx->setCursor(600 - bw/2, yDigit);
     gfx->print(b);
 
-    // × in the middle, smaller and dimmer
-    gfx->setTextSize(8);
+    // × in the true horizontal centre at x=400, smaller and dimmer
+    gfx->setTextSize(6);
     gfx->setTextColor(COL_LABEL, COL_BG);
-    gfx->setCursor(380, 180);
+    gfx->setCursor(385, 195);
     gfx->print("x");
 
-    // HOME / AWAY labels
+    // HOME / AWAY labels — width of "HOME" at size 3 is 4*6*3 = 72 px
     gfx->fillRect(0, 420, 800, 60, COL_BG);
     gfx->setTextSize(3);
     gfx->setTextColor(COL_LABEL, COL_BG);
-    gfx->setCursor(155, 432);
+    gfx->setCursor(200 - 36, 432);
     gfx->print("HOME");
-    gfx->setCursor(575, 432);
+    gfx->setCursor(600 - 36, 432);
     gfx->print("AWAY");
 }
 
@@ -220,6 +228,10 @@ void setup() {
     } else {
         Serial.println("[gfx] panel initialised");
     }
+    // Landscape with USB-C on the left of the chassis is the panel's
+    // native orientation — rotation 0 renders glyphs upright. Other
+    // mountings need a different value (USB-C up=1, right=2, down=3).
+    gfx->setRotation(0);
     pinMode(pins::LCD_BACKLIGHT, OUTPUT);
     digitalWrite(pins::LCD_BACKLIGHT, HIGH);
     renderSplash("Conectando WiFi...", COL_DIM);
