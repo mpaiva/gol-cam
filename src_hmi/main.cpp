@@ -228,10 +228,11 @@ struct HttpCmd { char url[160]; };
 static QueueHandle_t httpQueue = nullptr;
 
 static void httpKick(const String& url) {
-    if (!httpQueue) return;
+    if (!httpQueue) { Serial.println("[http] queue not ready, dropping"); return; }
     HttpCmd c{};
     snprintf(c.url, sizeof(c.url), "%s", url.c_str());
-    xQueueSend(httpQueue, &c, 0);  // non-blocking; drop oldest on overflow
+    BaseType_t ok = xQueueSend(httpQueue, &c, 0);
+    Serial.printf("[http] queued %s (%s)\n", c.url, ok == pdTRUE ? "ok" : "FULL");
 }
 
 static void httpExec(const char* url) {
@@ -247,6 +248,7 @@ static void httpExec(const char* url) {
 }
 
 static void runAction(ActionId a) {
+    Serial.printf("[action] dispatch %d\n", (int)a);
     switch (a) {
         case ACT_CAL_A:
             httpKick(String("http://") + camA.ip + "/calibrate");
@@ -434,8 +436,8 @@ static void serviceTouch() {
         pressedButton = -1;
         drawButton(idx);
         pendingAction = buttons[idx].action;
-        Serial.printf("[touch] release on button %d → action %d\n",
-                      idx, (int)pendingAction);
+        Serial.printf("[touch] release btn=%d \"%s\" → action=%d\n",
+                      idx, buttons[idx].label, (int)pendingAction);
     }
 }
 
