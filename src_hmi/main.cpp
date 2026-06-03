@@ -22,7 +22,6 @@
 #include <HTTPClient.h>
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
-#include <TAMC_GT911.h>
 
 #ifndef WIFI_SSID
 #error "WIFI_SSID not defined — set it in .env (see CLAUDE.md)"
@@ -71,11 +70,51 @@ Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
 Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
     800, 480, rgbpanel, 0, true);
 
-// GT911 touchscreen. Constructed with sentinel pins for INT/RST + I2C
-// addr 0x5D (default for 800-wide panels — alternative 0x14 if comms fail).
-TAMC_GT911 ts = TAMC_GT911(pins::TOUCH_SDA, pins::TOUCH_SCL,
-                            pins::TOUCH_INT, pins::TOUCH_RST,
-                            800, 480);
+// Minimal inline GT911 driver. The TAMC_GT911 lib chokes on the
+// CrowPanel revision that doesn't expose INT/RST (it tries to pinMode
+// -1 which throws "Invalid pin" errors and leaves the lib in a partial
+// init state). We do polling reads of the chip's status + coord
+// registers directly over Wire.
+namespace gt911 {
+    constexpr uint8_t ADDR              = 0x5D;
+    constexpr uint16_t REG_STATUS       = 0x814E;  // bit7 = ready, low 4 = #points
+    constexpr uint16_t REG_POINT1       = 0x8150;  // 7 bytes per point
+    static int  lastX = -1, lastY = -1;
+    static bool touched = false;
+
+    static bool writeReg(uint16_t reg, uint8_t v) {
+        Wire.beginTransmission(ADDR);
+        Wire.write((uint8_t)(reg >> 8));
+        Wire.write((uint8_t)(reg & 0xFF));
+        Wire.write(v);
+        return Wire.endTransmission() == 0;
+    }
+    static bool readRegs(uint16_t reg, uint8_t* buf, int n) {
+        Wire.beginTransmission(ADDR);
+        Wire.write((uint8_t)(reg >> 8));
+        Wire.write((uint8_t)(reg & 0xFF));
+        if (Wire.endTransmission(false) != 0) return false;
+        Wire.requestFrom((int)ADDR, n);
+        int i = 0;
+        while (Wire.available() && i < n) buf[i++] = Wire.read();
+        return i == n;
+    }
+
+    static void poll() {
+        uint8_t s;
+        if (!readRegs(REG_STATUS, &s, 1)) { touched = false; return; }
+        if (!(s & 0x80)) { touched = false; return; }  // not ready
+        int n = s & 0x0F;
+        if (n == 0) { touched = false; writeReg(REG_STATUS, 0); return; }
+        uint8_t pt[7];
+        if (!readRegs(REG_POINT1, pt, 7)) { writeReg(REG_STATUS, 0); return; }
+        // 0,1 = x lo,hi   2,3 = y lo,hi   4,5 = size  6 = reserved
+        lastX = pt[0] | (pt[1] << 8);
+        lastY = pt[2] | (pt[3] << 8);
+        touched = true;
+        writeReg(REG_STATUS, 0);  // ACK the data
+    }
+}
 
 // =============================================================
 // Camera state — both cameras polled every CAM_POLL_MS so we can render
@@ -98,8 +137,15 @@ static CamState camB;
 static volatile int placarA = -1;
 static volatile int placarB = -1;
 static volatile bool placarOnline = false;
-static uint32_t lastPlacarPollMs = 0;
 static bool firstFullDraw = true;
+
+// Dirty flags set by the background polling task (core 0). The main loop
+// (core 1) checks them every iteration and re-renders only what changed,
+// so HTTP latency never blocks touch reads or button feedback.
+static volatile bool dirtyHeader  = false;
+static volatile bool dirtyDigits  = false;
+static volatile bool dirtyStatus  = false;
+static volatile bool dirtyButtons = false;
 
 // =============================================================
 // Buttons. Hit-tested against raw touch coords; the action callback
@@ -142,6 +188,13 @@ constexpr uint16_t COL_ORANGE= 0xFD20;
 constexpr uint16_t COL_WHITE = 0xFFFF;
 constexpr uint16_t COL_BLACK = 0x0000;
 
+// Forward declarations (needed because runAction's optimistic redraw
+// path calls back into the renderer).
+static void drawScoreDigits();
+static void drawHeader();
+static void drawSideStatus();
+static void drawButton(int idx);
+
 static bool extractIntField(const String& body, const char* key, int* out) {
     String pat = String("\"") + key + "\":";
     int i = body.indexOf(pat);
@@ -166,45 +219,57 @@ static bool extractBoolField(const String& body, const char* key, bool* out) {
 }
 
 // =============================================================
-// HTTP fan-out — synchronous GETs queued from the main loop. Human-paced
-// button clicks (one per second tops) don't justify the complexity of
-// background tasks. Worst-case fan-out is 3 hosts × ~200 ms = 600 ms,
-// which still leaves the touch read loop responsive.
+// HTTP serialisation — one worker task on core 0 owns the HTTP stack and
+// is the only thing that calls HTTPClient. UI actions and polling both
+// push commands into the same queue so concurrent HTTPClient use (which
+// corrupts state on the ESP32 Arduino stack) can never happen.
 // =============================================================
-static void httpKick(const char* url) {
+struct HttpCmd { char url[160]; };
+static QueueHandle_t httpQueue = nullptr;
+
+static void httpKick(const String& url) {
+    if (!httpQueue) return;
+    HttpCmd c{};
+    snprintf(c.url, sizeof(c.url), "%s", url.c_str());
+    xQueueSend(httpQueue, &c, 0);  // non-blocking; drop oldest on overflow
+}
+
+static void httpExec(const char* url) {
     HTTPClient http;
-    if (!http.begin(url)) return;
-    http.setTimeout(1500);
-    int code = http.GET();
-    Serial.printf("[http] GET %s → %d\n", url, code);
-    http.end();
+    if (http.begin(url)) {
+        http.setTimeout(1500);
+        int code = http.GET();
+        Serial.printf("[http] %s → %d\n", url, code);
+        http.end();
+    } else {
+        Serial.printf("[http] %s → begin failed\n", url);
+    }
 }
 
 static void runAction(ActionId a) {
-    char url[160];
     switch (a) {
         case ACT_CAL_A:
-            httpKick(("http://" + String(camA.ip) + "/calibrate").c_str());
+            httpKick(String("http://") + camA.ip + "/calibrate");
             break;
         case ACT_CAL_B:
-            httpKick(("http://" + String(camB.ip) + "/calibrate").c_str());
+            httpKick(String("http://") + camB.ip + "/calibrate");
             break;
         case ACT_START_PAUSE: {
-            // Toggle: if either cam is playing → pause both; if any is paused →
-            // resume; otherwise start both. /start no-ops on uncalibrated cams.
             bool anyPlaying = (camA.state == 2) || (camB.state == 2);
             bool anyPaused  = (camA.state == 3) || (camB.state == 3);
             const char* cmd = anyPlaying ? "pause" : (anyPaused ? "resume" : "start");
-            snprintf(url, sizeof(url), "http://%s/%s", camA.ip, cmd);
-            httpKick(url);
-            snprintf(url, sizeof(url), "http://%s/%s", camB.ip, cmd);
-            httpKick(url);
+            httpKick(String("http://") + camA.ip + "/" + cmd);
+            httpKick(String("http://") + camB.ip + "/" + cmd);
             break;
         }
         case ACT_RESET_ALL:
-            httpKick(("http://" + String(camA.ip) + "/reset").c_str());
-            httpKick(("http://" + String(camB.ip) + "/reset").c_str());
-            httpKick(("http://" SCOREBOARD_IP "/api/reset"));
+            httpKick(String("http://") + camA.ip + "/reset");
+            httpKick(String("http://") + camB.ip + "/reset");
+            httpKick(String("http://" SCOREBOARD_IP "/api/reset"));
+            // Optimistic redraw — without waiting for the next placar
+            // poll, we know the score will be 0:0 after this fan-out lands.
+            placarA = 0; placarB = 0;
+            drawScoreDigits();
             break;
         case ACT_NONE: break;
     }
@@ -345,11 +410,17 @@ static int hitTest(int x, int y) {
 }
 
 static void serviceTouch() {
-    ts.read();
-    bool isPressed = (ts.isTouched && ts.touches > 0);
+    gt911::poll();
+    bool isPressed = gt911::touched;
     if (isPressed) {
-        int tx = ts.points[0].x;
-        int ty = ts.points[0].y;
+        int tx = gt911::lastX;
+        int ty = gt911::lastY;
+        static uint32_t lastTouchLog = 0;
+        uint32_t now = millis();
+        if (now - lastTouchLog > 250) {
+            Serial.printf("[touch] raw (%d, %d)\n", tx, ty);
+            lastTouchLog = now;
+        }
         int idx = hitTest(tx, ty);
         if (idx != pressedButton) {
             int prev = pressedButton;
@@ -402,10 +473,17 @@ static void connectWiFi() {
 static void pollPlacar() {
     HTTPClient http;
     String url = String("http://" SCOREBOARD_IP "/status");
-    if (!http.begin(url)) { placarOnline = false; return; }
+    if (!http.begin(url)) {
+        if (placarOnline) { placarOnline = false; dirtyHeader = true; }
+        return;
+    }
     http.setTimeout(1200);
     int code = http.GET();
-    if (code != 200) { placarOnline = false; http.end(); return; }
+    if (code != 200) {
+        if (placarOnline) { placarOnline = false; dirtyHeader = true; }
+        http.end();
+        return;
+    }
     String body = http.getString();
     http.end();
     int newA = placarA, newB = placarB;
@@ -413,25 +491,26 @@ static void pollPlacar() {
     extractIntField(body, "b", &newB);
     bool wasOnline = placarOnline;
     placarOnline = true;
+    if (!wasOnline) dirtyHeader = true;
     if (!wasOnline || newA != placarA || newB != placarB) {
         placarA = newA;
         placarB = newB;
-        drawHeader();     // pill changes colour with online state
-        drawScoreDigits();
+        dirtyDigits = true;
     }
 }
 
 static void pollCam(CamState& c) {
     HTTPClient http;
     String url = "http://" + String(c.ip) + "/status";
-    if (!http.begin(url)) { c.online = false; drawSideStatus(); return; }
+    if (!http.begin(url)) {
+        if (c.online) { c.online = false; dirtyStatus = true; }
+        return;
+    }
     http.setTimeout(1200);
     int code = http.GET();
     if (code != 200) {
-        bool was = c.online;
-        c.online = false;
+        if (c.online) { c.online = false; dirtyStatus = true; }
         http.end();
-        if (was) drawSideStatus();
         return;
     }
     String body = http.getString();
@@ -444,8 +523,30 @@ static void pollCam(CamState& c) {
     bool changed = !c.online || st != c.state || cal != c.calibrated;
     c.online = true; c.state = st; c.calibrated = cal; c.goals = goals;
     if (changed) {
-        drawSideStatus();
-        drawButton(1);  // Start/Pause label depends on cam states
+        dirtyStatus = true;
+        dirtyButtons = true;  // START/PAUSE label tracks cam state
+    }
+}
+
+// Background worker on core 0. Interleaves queued action URLs (user taps)
+// with periodic polling. Single-threaded HTTP — no race on HTTPClient,
+// and the main loop on core 1 stays touch-responsive.
+static void workerTask(void*) {
+    uint32_t lastPlacar = 0, lastCamA = 0, lastCamB = 0;
+    HttpCmd cmd;
+    while (true) {
+        // 1. Drain any queued UI actions first so taps feel snappy.
+        while (xQueueReceive(httpQueue, &cmd, 0) == pdTRUE) {
+            httpExec(cmd.url);
+        }
+        // 2. Periodic polls (only if WiFi up).
+        if (WiFi.status() == WL_CONNECTED) {
+            uint32_t now = millis();
+            if (now - lastPlacar >= PLACAR_POLL_MS) { pollPlacar(); lastPlacar = now; }
+            if (now - lastCamA >= CAM_POLL_MS)      { pollCam(camA); lastCamA = now; }
+            if (now - lastCamB >= CAM_POLL_MS)      { pollCam(camB); lastCamB = now; }
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
 
@@ -467,11 +568,18 @@ void setup() {
     digitalWrite(pins::LCD_BACKLIGHT, HIGH);
     renderSplash("Conectando WiFi...", COL_DIM);
 
-    // GT911 i2c init — use the pins shared with the touch SDA/SCL header.
+    // I2C bus comes up at the standard 100 kHz; GT911 supports up to 400
+    // kHz but we leave headroom for the audio chip at 0x18 on the same bus.
     Wire.begin(pins::TOUCH_SDA, pins::TOUCH_SCL);
-    ts.begin();
-    ts.setRotation(ROTATION_NORMAL);
-    Serial.println("[touch] GT911 initialised (polling mode)");
+    // Scan once at boot so we know which devices are responding.
+    Serial.println("[i2c] scanning bus...");
+    for (uint8_t addr = 1; addr < 127; addr++) {
+        Wire.beginTransmission(addr);
+        if (Wire.endTransmission() == 0) {
+            Serial.printf("[i2c]   device @ 0x%02X\n", addr);
+        }
+    }
+    Serial.println("[touch] inline GT911 polling driver ready");
 
     connectWiFi();
     renderSplash("Aguardando placar...", COL_DIM);
@@ -481,39 +589,36 @@ void setup() {
     // First full draw so all four button rects exist before the first
     // touch event can land on them.
     renderFull();
+
+    // Queue for serialised HTTP commands (depth 8 = enough for a
+    // 3-URL RESET burst even while a poll is in flight).
+    httpQueue = xQueueCreate(8, sizeof(HttpCmd));
+    xTaskCreatePinnedToCore(workerTask, "http", 6144, NULL, 1, NULL, 0);
 }
 
 void loop() {
-    uint32_t now = millis();
-
     if (WiFi.status() != WL_CONNECTED) {
         WiFi.reconnect();
         delay(500);
         return;
     }
 
-    // Touch is the highest-frequency check — every loop iteration.
+    // Touch first so button feedback feels instant.
     serviceTouch();
 
-    // Fire any queued button action.
     if (pendingAction != ACT_NONE) {
         ActionId a = pendingAction;
         pendingAction = ACT_NONE;
         runAction(a);
     }
 
-    if (now - lastPlacarPollMs >= PLACAR_POLL_MS) {
-        lastPlacarPollMs = now;
-        pollPlacar();
-    }
-    if (now - camA.lastPollMs >= CAM_POLL_MS) {
-        camA.lastPollMs = now;
-        pollCam(camA);
-    }
-    if (now - camB.lastPollMs >= CAM_POLL_MS) {
-        camB.lastPollMs = now;
-        pollCam(camB);
-    }
+    // Re-render whatever the polling task on core 0 marked dirty. Order
+    // matters so overlapping rects redraw correctly (header before
+    // digits before buttons before status).
+    if (dirtyHeader)  { dirtyHeader  = false; drawHeader(); }
+    if (dirtyDigits)  { dirtyDigits  = false; drawScoreDigits(); }
+    if (dirtyButtons) { dirtyButtons = false; drawButton(1); }
+    if (dirtyStatus)  { dirtyStatus  = false; drawSideStatus(); }
 
-    delay(5);  // give the touch IC i2c bus + IDLE for WiFi housekeeping
+    delay(2);  // small yield for FreeRTOS housekeeping
 }
