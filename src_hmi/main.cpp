@@ -284,7 +284,11 @@ struct CamState {
     int  colorTh = 0;
     int  calContrast = 0;
     bool hasCalSnap = false;
-    char calMsg[40] = {0};
+    // calMsg can grow long ("FAILED: No edges found (20). Place dadinho
+    // dentro do gol"). 64 bytes covers the longest cam messages plus a
+    // null. The overlay render still truncates visually to fit the 760
+    // px panel width.
+    char calMsg[64] = {0};
 };
 static CamState camA;
 static CamState camB;
@@ -340,8 +344,13 @@ struct CalOverlay {
     int8_t   phase;            // 0=RUNNING, 1=RESULT_OK, 2=RESULT_FAIL
     uint32_t resultUntilMs;    // millis() deadline for auto-dismiss
     int8_t   trackedState;     // last cam.state we observed, for edge detect
+    uint32_t startedMs;        // when the overlay was raised (for min-age gate)
+    // calMsg snapshot at raise-time — early-fail only fires when the
+    // cam's calMsg differs from this (i.e. a fresh failure during THIS
+    // calibration cycle, not the stale message from the previous one).
+    char     msgAtRaise[64];
 };
-static volatile CalOverlay calOverlay = { -1, 0, 0, -1 };
+static volatile CalOverlay calOverlay = { -1, 0, 0, -1, 0, {0} };
 
 // "Cancelar" button on the overlay — only hit-tested while overlay is up.
 // Lives centred near the bottom of the overlay rect.
@@ -677,11 +686,17 @@ static void runAction(ActionId a) {
             // Raise the overlay immediately for instant feedback. The
             // poll loop will pick up cam.state=1 within 1 s, but the
             // operator shouldn't have to wait that long to know their
-            // tap registered.
+            // tap registered. We also snapshot the cam's current calMsg
+            // so early-fail detection only fires on a *new* FAILED
+            // message — otherwise a stale FAILED from the previous run
+            // would flip us into RESULT_FAIL on frame 1.
             calOverlay.side          = 0;
             calOverlay.phase         = 0;
             calOverlay.trackedState  = camA.state;
             calOverlay.resultUntilMs = 0;
+            calOverlay.startedMs     = millis();
+            for (size_t k = 0; k < sizeof(calOverlay.msgAtRaise); k++)
+                calOverlay.msgAtRaise[k] = camA.calMsg[k];
             dirtyOverlay             = true;
             break;
         case ACT_CAL_B:
@@ -690,6 +705,9 @@ static void runAction(ActionId a) {
             calOverlay.phase         = 0;
             calOverlay.trackedState  = camB.state;
             calOverlay.resultUntilMs = 0;
+            calOverlay.startedMs     = millis();
+            for (size_t k = 0; k < sizeof(calOverlay.msgAtRaise); k++)
+                calOverlay.msgAtRaise[k] = camB.calMsg[k];
             dirtyOverlay             = true;
             break;
         case ACT_CAL_CANCEL: {
@@ -850,12 +868,16 @@ static void renderFull() {
 }
 
 // =============================================================
-// Calibration overlay rendering. Covers y=65 → y=420 of the panel
-// (everything from below the header through the buttons; the
-// HOME/AWAY status pills at y=405+ stay visible underneath so the
-// operator can still see whether the cam is online during cal).
+// Calibration overlay rendering. White panel with blue text. Covers
+// y=60 → y=400 of the panel — overlap into the bottom edge of the
+// header (y=0-60) and the buttons (y=230-390) ensures no residual
+// pixels from the underlying score+buttons can bleed through. The
+// HOME/AWAY status pills at y=405+ stay visible underneath.
 // =============================================================
-constexpr int OVL_X = 20, OVL_Y = 75, OVL_W = 760, OVL_H = 325;
+constexpr int OVL_X = 10, OVL_Y = 65, OVL_W = 780, OVL_H = 335;
+constexpr uint16_t OVL_BG     = 0xFFFF;   // white
+constexpr uint16_t OVL_BLUE   = 0x0011;   // strong dark blue
+constexpr uint16_t OVL_BLUE2  = 0x4A1F;   // lighter accent blue
 
 static void drawCalOverlay() {
     // Snapshot the volatile fields one at a time — copying a volatile
@@ -869,9 +891,12 @@ static void drawCalOverlay() {
     const CamState& c = (ov.side == 0) ? camA : camB;
     const char* sideLabel = (ov.side == 0) ? "Lado A (HOME)" : "Lado B (AWAY)";
 
-    // Background panel.
-    gfx->fillRoundRect(OVL_X, OVL_Y, OVL_W, OVL_H, 14, 0x18E3);
-    gfx->drawRoundRect(OVL_X, OVL_Y, OVL_W, OVL_H, 14, COL_LABEL);
+    // Solid white panel — fillRect (not rounded) so corners don't
+    // expose the underlying score view through transparent radii.
+    gfx->fillRect(OVL_X, OVL_Y, OVL_W, OVL_H, OVL_BG);
+    // Double blue border for visibility.
+    gfx->drawRect(OVL_X,     OVL_Y,     OVL_W,     OVL_H,     OVL_BLUE);
+    gfx->drawRect(OVL_X + 1, OVL_Y + 1, OVL_W - 2, OVL_H - 2, OVL_BLUE);
 
     // Title row.
     char title[64];
@@ -882,11 +907,13 @@ static void drawCalOverlay() {
     } else {
         snprintf(title, sizeof(title), "Calibrando %s", sideLabel);
     }
+    // Keep success/fail title colour-coded; default and RUNNING use
+    // the strong blue. All three render legibly on the white panel.
     uint16_t titleCol = (ov.phase == 1) ? COL_GREEN
                        : (ov.phase == 2) ? COL_RED
-                       : 0xFD20;  // orange (CAL...)
+                       : OVL_BLUE;
     gfx->setTextSize(3);
-    gfx->setTextColor(titleCol, 0x18E3);
+    gfx->setTextColor(titleCol, OVL_BG);
     int tw = (int)strlen(title) * 18;
     gfx->setCursor(OVL_X + (OVL_W - tw) / 2, OVL_Y + 22);
     gfx->print(title);
@@ -896,17 +923,17 @@ static void drawCalOverlay() {
         const char* sub = "Coloque o dadinho dentro do gol";
         int sw = (int)strlen(sub) * 12;
         gfx->setTextSize(2);
-        gfx->setTextColor(COL_WHITE, 0x18E3);
+        gfx->setTextColor(OVL_BLUE, OVL_BG);
         gfx->setCursor(OVL_X + (OVL_W - sw) / 2, OVL_Y + 80);
         gfx->print(sub);
 
-        // calMsg from the camera. Truncate at 36 chars to fit on one
-        // line at text size 2 in our 760-px-wide overlay.
-        char msg[40];
+        // calMsg from the camera. Truncated visually if it wouldn't
+        // fit within the overlay's inner width.
+        char msg[64];
         snprintf(msg, sizeof(msg), "%s", c.calMsg[0] ? c.calMsg : "(aguardando…)");
         int mw = (int)strlen(msg) * 12;
         if (mw > OVL_W - 40) mw = OVL_W - 40;
-        gfx->setTextColor(0xFD20, 0x18E3);  // orange
+        gfx->setTextColor(OVL_BLUE2, OVL_BG);
         gfx->setCursor(OVL_X + (OVL_W - mw) / 2, OVL_Y + 130);
         gfx->print(msg);
 
@@ -915,14 +942,14 @@ static void drawCalOverlay() {
         // doesn't expose a 0..100 percentage.
         int barX = OVL_X + 60, barY = OVL_Y + 180;
         int barW = OVL_W - 120, barH = 22;
-        gfx->drawRoundRect(barX, barY, barW, barH, 6, COL_LABEL);
+        gfx->drawRect(barX, barY, barW, barH, OVL_BLUE);
         int fill = 0;
-        if (c.state == 1) fill = 25;             // entered CAL state
-        if (c.hasCalSnap) fill = 60;             // snapshot captured
-        if (c.calContrast > 0) fill = 90;        // contrast measured
+        if (c.state == 1) fill = 25;
+        if (c.hasCalSnap) fill = 60;
+        if (c.calContrast > 0) fill = 90;
         if (fill > 0) {
             int fw = (barW - 4) * fill / 100;
-            gfx->fillRoundRect(barX + 2, barY + 2, fw, barH - 4, 4, 0xFD20);
+            gfx->fillRect(barX + 2, barY + 2, fw, barH - 4, OVL_BLUE2);
         }
     } else {
         // RESULT phase: show the learned thresholds (OK) or a hint (FAIL).
@@ -936,7 +963,7 @@ static void drawCalOverlay() {
             snprintf(line2, sizeof(line2), "Posicione e toque CAL novamente");
         }
         gfx->setTextSize(2);
-        gfx->setTextColor(COL_WHITE, 0x18E3);
+        gfx->setTextColor(OVL_BLUE, OVL_BG);
         int l1w = (int)strlen(line1) * 12;
         gfx->setCursor(OVL_X + (OVL_W - l1w) / 2, OVL_Y + 110);
         gfx->print(line1);
@@ -945,12 +972,13 @@ static void drawCalOverlay() {
         gfx->print(line2);
     }
 
-    // Cancelar button — only shown in RUNNING phase.
+    // Cancelar button — only shown in RUNNING phase. Red bg + white
+    // text contrasts well against the white panel.
     if (ov.phase == 0) {
-        gfx->fillRoundRect(CANCEL_X, CANCEL_Y, CANCEL_W, CANCEL_H, 10, 0x6000);
-        gfx->drawRoundRect(CANCEL_X, CANCEL_Y, CANCEL_W, CANCEL_H, 10, COL_WHITE);
+        gfx->fillRect(CANCEL_X, CANCEL_Y, CANCEL_W, CANCEL_H, COL_RED);
+        gfx->drawRect(CANCEL_X, CANCEL_Y, CANCEL_W, CANCEL_H, OVL_BLUE);
         gfx->setTextSize(3);
-        gfx->setTextColor(COL_WHITE, 0x6000);
+        gfx->setTextColor(COL_WHITE, COL_RED);
         const char* cancelLabel = "Cancelar";
         int cw = (int)strlen(cancelLabel) * 18;
         gfx->setCursor(CANCEL_X + (CANCEL_W - cw) / 2,
@@ -974,6 +1002,35 @@ static void updateCalOverlay() {
         calOverlay.trackedState = (int8_t)c.state;
         if (prev == 1 && c.state != 1) {
             calOverlay.phase         = c.calibrated ? 1 : 2;
+            calOverlay.resultUntilMs = millis() + 3000;
+            dirtyOverlay             = true;
+            return;
+        }
+        // Early-fail: the camera frequently sets calMsg = "FAILED: ..."
+        // or "FALHOU: ..." while still in state=1 for another second
+        // before transitioning back to IDLE. Flip the overlay to
+        // RESULT_FAIL the moment we see that prefix so the user doesn't
+        // stare at a "Calibrando..." title with a failure message under
+        // it. Once in RESULT_FAIL we sit out the 3 s timer regardless
+        // of any later cam updates.
+        const char* m = c.calMsg;
+        bool failedNow = (m[0] == 'F') &&
+            ( (m[1]=='A' && m[2]=='I' && m[3]=='L' && m[4]=='E' && m[5]=='D') ||
+              (m[1]=='A' && m[2]=='L' && m[3]=='H' && m[4]=='O' && m[5]=='U') );
+        // Only treat this as a fresh failure if (a) the calMsg differs
+        // from the snapshot we took at CAL-tap time, AND (b) the overlay
+        // has been visible for at least 500 ms (gives the cam time to
+        // actually start a new cycle). Without these gates, a stale
+        // FAILED message from a previous attempt flips us to RESULT_FAIL
+        // on frame 1 and the operator never sees the "Calibrando" phase.
+        bool msgChangedSinceRaise = false;
+        for (size_t k = 0; k < sizeof(calOverlay.msgAtRaise); k++) {
+            if (calOverlay.msgAtRaise[k] != m[k]) { msgChangedSinceRaise = true; break; }
+            if (m[k] == 0) break;
+        }
+        bool pastMinAge = (millis() - calOverlay.startedMs) >= 500;
+        if (failedNow && msgChangedSinceRaise && pastMinAge) {
+            calOverlay.phase         = 2;
             calOverlay.resultUntilMs = millis() + 3000;
             dirtyOverlay             = true;
         }
