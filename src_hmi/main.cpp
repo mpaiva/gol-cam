@@ -168,6 +168,10 @@ enum ActionId {
     ACT_CAL_B,
     ACT_START_PAUSE,
     ACT_RESET_ALL,
+    ACT_A_PLUS,
+    ACT_A_MINUS,
+    ACT_B_PLUS,
+    ACT_B_MINUS,
 };
 static volatile ActionId pendingAction = ACT_NONE;
 
@@ -178,11 +182,21 @@ struct Button {
     uint16_t fillPressed;
     ActionId action;
 };
+// Two rows of buttons fit comfortably under a slightly compressed score
+// area. Top row = referee score adjustments (per side). Bottom row =
+// match-control actions.
 static Button buttons[] = {
-    {  20, 300, 170, 80, "CAL A",  0xFD20, 0xFEC0, ACT_CAL_A },         // orange
-    { 210, 300, 170, 80, "START",  0x0640, 0x07E0, ACT_START_PAUSE },   // green; label flips runtime
-    { 420, 300, 170, 80, "RESET",  0x6000, 0xA800, ACT_RESET_ALL },     // dark red
-    { 610, 300, 170, 80, "CAL B",  0xFD20, 0xFEC0, ACT_CAL_B },
+    // Score-adjust row — green +, dark red −. Paired by side so the
+    // operator's eye doesn't have to cross the middle to find them.
+    {  20, 230, 170, 70, "A +",   0x0640, 0x07E0, ACT_A_PLUS  },
+    { 210, 230, 170, 70, "A -",   0x6000, 0xA800, ACT_A_MINUS },
+    { 420, 230, 170, 70, "B -",   0x6000, 0xA800, ACT_B_MINUS },
+    { 610, 230, 170, 70, "B +",   0x0640, 0x07E0, ACT_B_PLUS  },
+    // Match-control row
+    {  20, 320, 170, 70, "CAL A", 0xFD20, 0xFEC0, ACT_CAL_A },          // orange
+    { 210, 320, 170, 70, "START", 0x0640, 0x07E0, ACT_START_PAUSE },    // label flips runtime
+    { 420, 320, 170, 70, "RESET", 0x6000, 0xA800, ACT_RESET_ALL },      // dark red
+    { 610, 320, 170, 70, "CAL B", 0xFD20, 0xFEC0, ACT_CAL_B },
 };
 constexpr int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 static int pressedButton = -1;     // index of currently pressed button (-1 none)
@@ -340,14 +354,19 @@ static void runAction(ActionId a) {
             break;
         }
         case ACT_RESET_ALL:
-            // We ARE the placar — clear local counters directly, then
-            // tell the cameras to clear their goalCounts so the system
-            // is consistent end-to-end.
             placarA = 0; placarB = 0;
             dirtyDigits = true;
             httpKick(String("http://") + camA.ip + "/reset");
             httpKick(String("http://") + camB.ip + "/reset");
             break;
+        // Referee adjustments — local-only, max 99, min 0 (same clamp
+        // the placar's /goal and /goal-undo handlers use). Cameras'
+        // goalCounts are intentionally NOT touched here; a manual
+        // score adjustment doesn't reflect a detection.
+        case ACT_A_PLUS:  if (placarA < 99) { placarA++; dirtyDigits = true; } break;
+        case ACT_A_MINUS: if (placarA > 0)  { placarA--; dirtyDigits = true; } break;
+        case ACT_B_PLUS:  if (placarB < 99) { placarB++; dirtyDigits = true; } break;
+        case ACT_B_MINUS: if (placarB > 0)  { placarB--; dirtyDigits = true; } break;
         case ACT_NONE: break;
     }
 }
@@ -379,21 +398,24 @@ static void drawScoreDigits() {
     snprintf(a, sizeof(a), "%d", placarA < 0 ? 0 : placarA);
     snprintf(b, sizeof(b), "%d", placarB < 0 ? 0 : placarB);
 
-    gfx->fillRect(0, 70, 800, 220, COL_BG);
+    gfx->fillRect(0, 65, 800, 160, COL_BG);
 
-    gfx->setTextSize(15);
+    // Compressed to text size 12 (60 wide × 84 tall per glyph) so the
+    // score still reads from across the room but leaves vertical room
+    // for the two button rows underneath.
+    gfx->setTextSize(12);
     gfx->setTextColor(COL_SCORE, COL_BG);
-    const int yDigit = 110;
-    const int aw = (int)strlen(a) * 75;
-    const int bw = (int)strlen(b) * 75;
+    const int yDigit = 85;
+    const int aw = (int)strlen(a) * 60;
+    const int bw = (int)strlen(b) * 60;
     gfx->setCursor(200 - aw/2, yDigit);
     gfx->print(a);
     gfx->setCursor(600 - bw/2, yDigit);
     gfx->print(b);
 
-    gfx->setTextSize(5);
+    gfx->setTextSize(4);
     gfx->setTextColor(COL_LABEL, COL_BG);
-    gfx->setCursor(385, 145);
+    gfx->setCursor(388, 115);
     gfx->print("x");
 }
 
@@ -427,7 +449,7 @@ static void drawButtons() {
 // (calibrated + idle/play), orange = calibrating, red = offline, grey =
 // idle uncalibrated.
 static void drawSideStatus() {
-    gfx->fillRect(0, 400, 800, 80, COL_BG);
+    gfx->fillRect(0, 405, 800, 75, COL_BG);
 
     auto draw = [&](int cx, const char* label, const CamState& c) {
         gfx->setTextSize(3);
@@ -445,10 +467,10 @@ static void drawSideStatus() {
         else if (c.calibrated)     { pillCol = 0x0640; tag = "READY";   }
         else                       { pillCol = 0x39C7; tag = "IDLE";    }
         int pw = (int)strlen(tag) * 14 + 20;
-        gfx->fillRoundRect(cx - pw/2, 444, pw, 28, 6, pillCol);
+        gfx->fillRoundRect(cx - pw/2, 445, pw, 28, 6, pillCol);
         gfx->setTextSize(2);
         gfx->setTextColor(COL_WHITE, pillCol);
-        gfx->setCursor(cx - pw/2 + 10, 450);
+        gfx->setCursor(cx - pw/2 + 10, 451);
         gfx->print(tag);
     };
     draw(200, "HOME", camA);
@@ -574,7 +596,7 @@ static void pollCam(CamState& c) {
     c.online = true; c.state = st; c.calibrated = cal; c.goals = goals;
     if (changed) {
         dirtyStatus = true;
-        dirtyButtons = true;  // START/PAUSE label tracks cam state
+        dirtyButtons = true;  // START/PAUSE label tracks cam state (index 5)
     }
 }
 
@@ -669,7 +691,8 @@ void loop() {
     // digits before buttons before status).
     if (dirtyHeader)  { dirtyHeader  = false; drawHeader(); }
     if (dirtyDigits)  { dirtyDigits  = false; drawScoreDigits(); }
-    if (dirtyButtons) { dirtyButtons = false; drawButton(1); }
+    // START is the 6th button (index 5) after the 4 score-adjust buttons.
+    if (dirtyButtons) { dirtyButtons = false; drawButton(5); }
     if (dirtyStatus)  { dirtyStatus  = false; drawSideStatus(); }
 
     delay(2);  // small yield for FreeRTOS housekeeping
