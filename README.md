@@ -1,15 +1,16 @@
 # gol-cam
 
-Sistema eletrônico completo para **futebol de botão**: uma câmera que detecta gols por visão computacional, um placar de LED que mostra a contagem e um conjunto de peças impressas em 3D que une tudo. A detecção atual combina três sinais — **cor (HSV), movimento (frame-differencing)** e **bordas (Sobel)** — calibrados em conjunto a partir de uma única captura da bola colocada no gol.
+Sistema eletrônico completo para **futebol de botão**: uma câmera que detecta gols por visão computacional, um placar (LED tradicional ou touchscreen) que mostra a contagem e um conjunto de peças impressas em 3D que une tudo. A detecção atual combina três sinais — **cor (HSV), movimento (frame-differencing)** e **bordas (Sobel)** — calibrados em conjunto a partir de uma única captura da bola colocada no gol.
 
 ## Visão geral do sistema
 
-Três componentes coordenados em um único repositório:
+O repositório agora compila firmware para **três tipos de placa**:
 
 | Componente | Hardware | Função |
 |---|---|---|
 | **Câmera** | DFRobot DFR1154 (ESP32-S3 + OV3660) | Detecta gols por visão baseada em bordas; serve o painel web e o stream MJPEG |
-| **Placar** | ESP32 DevKit V1 + 4× matrizes de LED MAX7219 8×8 + 4 botões | Exibe o placar em dígitos de LED físicos; recebe eventos de gol da câmera e suporta override manual |
+| **Placar LED** | ESP32 DevKit V1 + 4× matrizes de LED MAX7219 8×8 + 4 botões | Exibe o placar em dígitos de LED físicos; recebe eventos de gol da câmera e suporta override manual |
+| **HMI touchscreen** *(opcional)* | CrowPanel DIS07050H (ESP32-S3 + 5" 800×480 IPS capacitivo) | Placar touchscreen + superfície do árbitro com 8 botões: A+/A−/B+/B−, CAL A / START / RESET / CAL B. Fala o **mesmo contrato REST** do placar LED, então pode operar em paralelo ou substituí-lo completamente. |
 | **Hardware** | Caixas impressas em 3D (`hardware/`) | Trave, caixa da câmera, gabinete do placar, acessórios |
 
 **Topologia de rede:**
@@ -24,27 +25,29 @@ Três componentes coordenados em um único repositório:
        ┌──────────────────┼──────────────────┐
        │                  │                  │
        ▼                  ▼                  ▼
-┌────────────┐     ┌────────────┐     ┌────────────┐
-│ Câmera A   │     │ Câmera B   │     │ Placar     │
-│ DFR1154    │     │ DFR1154    │     │ ESP32 +    │
-│ side=A     │     │ side=B     │     │ MAX7219    │
-│ .40.90     │     │ .40.91     │     │ .40.89     │
-└──────┬─────┘     └──────┬─────┘     └─────▲──────┘
+┌────────────┐     ┌────────────┐     ┌──────────────────┐
+│ Câmera A   │     │ Câmera B   │     │ Placar           │
+│ DFR1154    │     │ DFR1154    │     │ LED (MAX7219) ou │
+│ side=A     │     │ side=B     │     │ HMI touchscreen  │
+│ .40.90     │     │ .40.91     │     │ .40.89           │
+└──────┬─────┘     └──────┬─────┘     └─────▲────────────┘
        │                  │                 │
        └──────────────────┴─────────────────┘
               GET /goal?side=a|b       na detecção
               GET /goal-undo?side=a|b  na anulação VAR
 ```
 
-Para uma configuração com apenas uma câmera, omita a Câmera B. O placar e a câmera trabalham apenas em modo STA (sem fallback AP); se o WiFi cair, a câmera não consegue empurrar o gol, mas os 4 botões físicos no placar continuam funcionando para placar manual.
+A vaga em `.40.89` pode ser ocupada pelo **placar LED** (ESP32 + MAX7219) **ou** pelo **HMI touchscreen** (CrowPanel) — ambos servem o mesmo contrato REST, então as câmeras não precisam saber qual está conectado. Configurar uma partida sem laptop fica simples: o HMI tem os botões CAL A / START / RESET / CAL B na tela e dispara os comandos HTTP para as duas câmeras.
+
+Para uma configuração com apenas uma câmera, omita a Câmera B. Placa e câmera trabalham apenas em modo STA (sem fallback AP); se o WiFi cair, a câmera não consegue empurrar o gol, mas os 4 botões físicos no placar LED — ou os botões A+/A−/B+/B− na tela do HMI — continuam funcionando para placar manual.
 
 **Esquema de IP estático sugerido** (define em `.env` via `WIFI_STATIC_IP` / `SCOREBOARD_STATIC_IP`):
 
-| Placa | IP |
-|---|---|
-| Placar | `192.168.40.89` |
-| Câmera A (side A) | `192.168.40.90` |
-| Câmera B (side B, `BOARD_ROLE=home`) | `192.168.40.91` |
+| Placa | IP | Observação |
+|---|---|---|
+| Placar (LED **ou** HMI, não ambos ao mesmo tempo) | `192.168.40.89` | Câmeras empurram gols para cá |
+| Câmera A (side A) | `192.168.40.90` | `BOARD_ROLE` não definido |
+| Câmera B (side B) | `192.168.40.91` | `BOARD_ROLE=home` |
 
 ## Como funciona a detecção
 
@@ -107,11 +110,16 @@ O Dadinho foi oficialmente reconhecido pela Confederação Brasileira de Futebol
 - 1× amplificador I2S MAX98357 + alto-falante pequeno (já inclusos na placa DFR1154)
 - Cabo USB-C para alimentação e gravação
 
-**Placa do placar (×1, opcional):**
+**Placa do placar LED (×1, opcional):**
 - 1× ESP32 DevKit V1 (qualquer ESP32 com ≥8 GPIOs livres)
 - 4× módulos de matriz de LED MAX7219 8×8 (cadeia FC-16), 2 por lado
 - 4× push buttons (momentâneos, normalmente abertos)
 - Jumpers e fonte de 5 V (USB no DevKit funciona)
+
+**HMI touchscreen (×1, opcional — alternativa ao placar LED):**
+- 1× CrowPanel DIS07050H (ESP32-S3-WROOM-1-N4R8, 5" 800×480 RGB IPS, touch capacitivo GT911)
+- Cabo USB-C para alimentação e gravação
+- *Substitui* o placar LED se ocupar o IP `.89`; ou roda em paralelo num IP diferente para servir como segundo display do árbitro
 
 **Mecânica:**
 - Peças impressas em 3D a partir de `hardware/` (PLA, veja `hardware/README.md` para configurações do slicer)
@@ -150,6 +158,10 @@ Os macros estão inline no topo de `src_scoreboard/scoreboard.cpp`.
 ### Pinagem da câmera
 
 Veja `include/pins.h` — pré-configurada para a placa DFR1154. Não precisa fazer fiação.
+
+### HMI touchscreen (CrowPanel)
+
+Não precisa fazer fiação — toda a placa vem com o display RGB paralelo, touch I²C (GT911 em 0x5D, SDA=GPIO 19, SCL=GPIO 20), backlight (GPIO 2) e UART0 via CH340 conectados de fábrica. Definições de pino em `src_hmi/main.cpp`.
 
 ### Peças impressas em 3D
 
@@ -218,17 +230,22 @@ WIFI_SUBNET=255.255.255.0
 
 ### Passo 4 — Compilar e gravar
 
-Dois ambientes PlatformIO convivem no mesmo projeto:
+Três ambientes PlatformIO convivem no mesmo projeto, um por tipo de placa:
 
 ```bash
 # Câmera (padrão — igual a `pio run`)
 pio run -e dfr1154 -t upload
 
-# Placar
+# Placar LED MAX7219
 pio run -e placar -t upload
+
+# HMI touchscreen CrowPanel (alternativa ao placar LED)
+pio run -e crowpanel_hmi -t upload
 ```
 
 O ambiente padrão é `dfr1154`, então um `pio run` sem parâmetros compila a câmera. Grave uma placa por vez, ajustando o `.env` entre gravações se quiser valores diferentes de `BOARD_ROLE` ou IP estático.
+
+Para usar o **HMI no lugar do placar LED**, defina `WIFI_STATIC_IP=192.168.40.89` antes de gravar o HMI e desligue a placa do MAX7219 — as câmeras seguem empurrando gols para `.89` sem nenhuma mudança no firmware delas.
 
 ### Passo 5 — Descobrir o IP e abrir o painel
 
@@ -255,15 +272,16 @@ O placar serve sua própria interface simples no IP dele (incremento/reset manua
 ### Placar autônomo (sem câmera)
 
 Mesmo com as câmeras offline ou desligadas, o placar continua funcionando:
-- Botões físicos sempre funcionam (UP A/B, RESET A/B)
-- A interface web em `http://192.168.40.89/` espelha os botões + adiciona `/api/reset`
-- Endpoints REST disponíveis para o placar: `/goal?side=a|b` (+1), `/goal-undo?side=a|b` (−1, com piso em 0), `/a+`, `/b+`, `/az`, `/bz`, `/reset`, `/api/reset`, `/status`
+- **Placar LED**: botões físicos sempre funcionam (UP A/B, RESET A/B). A interface web em `http://192.168.40.89/` espelha os botões + adiciona `/api/reset`.
+- **HMI touchscreen**: os 8 botões na tela (A+ / A− / B+ / B−, CAL A / START / RESET / CAL B) operam o placar e as câmeras direto pelo display, sem precisar de celular ou notebook.
+- Endpoints REST disponíveis em qualquer das duas placas: `/goal?side=a|b` (+1), `/goal-undo?side=a|b` (−1, com piso em 0), `/a+`, `/b+`, `/az`, `/bz`, `/reset`, `/api/reset`, `/status`.
+- O HMI também expõe endpoints de diagnóstico do touch: `/debug/touch` retorna estado do controlador GT911 em JSON (útil quando o painel parece não responder).
 
 ## Estrutura do repositório
 
 ```
 gol-cam/
-├── platformio.ini              # Dois ambientes: dfr1154 + placar
+├── platformio.ini              # Três ambientes: dfr1154 + placar + crowpanel_hmi
 ├── partitions.csv              # Layout de 16 MB de flash para a câmera
 ├── load_env.py                 # .env → -D defines de build
 ├── .env                        # WiFi + IP estático + role (ignorado pelo git)
@@ -278,12 +296,26 @@ gol-cam/
 │   ├── training_dashboard.h    # HTML/JS do painel de treino (uma câmera)
 │   └── match_dashboard.h       # HTML/JS do painel de partida (duas câmeras)
 ├── src_scoreboard/
-│   └── scoreboard.cpp          # Placar: firmware monolítico (WiFi + MAX7219 + HTTP + botões)
+│   └── scoreboard.cpp          # Placar LED: firmware monolítico (WiFi + MAX7219 + HTTP + botões)
+├── src_hmi/
+│   └── main.cpp                # HMI touchscreen: RGB panel + GT911 + REST do placar + 8 botões touch
+├── tests/integration/
+│   └── test_system.py          # Suíte stdlib que exercita o contrato REST ao vivo (70 checks)
 ├── hardware/                   # Caixas impressas em 3D
 ├── .about/                     # Proposta de valor, feature requests
 ├── .plans/                     # Planos de implementação, notas de sessão
 └── .reports/                   # Pesquisa, auditoria de UX, screenshots
 ```
+
+## Testes
+
+Suíte de integração que bate na REST ao vivo das três placas:
+
+```bash
+python3 tests/integration/test_system.py
+```
+
+70 checks cobrindo formato do `/status`, transições `/calibrate`, `/reset`, `/deduct` (clamp em 0), e o caminho de sincronização entre câmera e placar (`/test-goal` empurrando para `.89`, `/test-fire` com snapshot VAR, anulação VAR via `/goal-undo`). Skip automático de qualquer placa que estiver offline.
 
 ## Licença
 
