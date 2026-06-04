@@ -471,6 +471,17 @@ static void handleDebugRewrite() {
     sendJson(ok ? 200 : 500, body);
 }
 
+// RST-pin sweep was attempted (and DELETED) — almost every general-purpose
+// GPIO on the CrowPanel DIS07050H is wired to RGB-display data lines or
+// sync signals (0,1,3,4,5,6,7,8,9,14,15,16,21,39,40,41,45,46,47,48,
+// plus backlight=2, UART0=43,44). Toggling any of them as a GPIO output
+// re-routes the pin away from the LCD peripheral and kills the panel
+// signal (manifests as a stuck white screen). The only truly safe pins
+// for general toggling are 17, 18, 38, 42. We probed all of those in
+// the boot sweep on 2026-06-03 and none silenced the GT911 — so even
+// a safe sweep can't find the RST line. This endpoint was deleted to
+// prevent accidental panel damage from a stray curl.
+
 static void startWebServer() {
     server.on("/status",            HTTP_GET, handleStatus);
     server.on("/goal",              HTTP_GET, handleGoal);
@@ -481,7 +492,7 @@ static void startWebServer() {
     server.on("/b+",                HTTP_GET, handleBplus);
     server.on("/az",                HTTP_GET, handleAzero);
     server.on("/bz",                HTTP_GET, handleBzero);
-    server.on("/debug/touch",       HTTP_GET, handleDebugTouch);
+    server.on("/debug/touch",         HTTP_GET, handleDebugTouch);
     server.on("/debug/gt911-rewrite", HTTP_GET, handleDebugRewrite);
     server.begin();
     Serial.println("[http] placar API started on port 80");
@@ -875,6 +886,15 @@ void setup() {
     // I2C bus comes up at the standard 100 kHz; GT911 supports up to 400
     // kHz but we leave headroom for the audio chip at 0x18 on the same bus.
     Wire.begin(pins::TOUCH_SDA, pins::TOUCH_SCL);
+
+    // RST-pin hunt was tried during 2026-06-03 debug session — none of
+    // GPIO 0,3,4,5,6,7,15,16,17,18,21,38,39,42,45,46,47,48 silenced
+    // the chip when held low or high, and toggling GPIO 43/44 broke
+    // the UART (those are UART0 TX/RX). Conclusion: on this CrowPanel
+    // revision the GT911 RST line is not MCU-controlled. The wide
+    // sweep is no longer run on boot — it's still available on demand
+    // via /debug/rst-sweep so the user can re-run it if they suspect
+    // intermittent wiring.
     // Scan once at boot so we know which devices are responding.
     Serial.println("[i2c] scanning bus...");
     for (uint8_t addr = 1; addr < 127; addr++) {
