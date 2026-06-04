@@ -511,32 +511,86 @@ static int hitTest(int x, int y) {
 }
 
 static void serviceTouch() {
+    // Debounce tuning. With 8 closely-spaced buttons on a capacitive
+    // panel, raw touches were firing on brushes / re-grabs of the
+    // chassis. These three thresholds together kill the false positives.
+    constexpr uint32_t MIN_PRESS_MS    = 60;   // hold this long before "pressed"
+    constexpr uint32_t POST_FIRE_MS    = 300;  // ignore touches after fire
+    constexpr int      SAME_BUTTON_HITS = 2;   // # consecutive polls on same idx
+
+    static uint32_t pressStartMs   = 0;
+    static uint32_t lastFireMs     = 0;
+    static int      candidateIdx   = -1;
+    static int      candidateHits  = 0;
+
+    uint32_t now = millis();
+    if (now - lastFireMs < POST_FIRE_MS) {
+        // Cooldown — drain touch state without acting on it so we
+        // start the next gesture from a clean baseline.
+        gt911::poll();
+        if (!gt911::touched) {
+            pressedButton = -1;
+            candidateIdx = -1;
+            candidateHits = 0;
+        }
+        return;
+    }
+
     gt911::poll();
     bool isPressed = gt911::touched;
     if (isPressed) {
         int tx = gt911::lastX;
         int ty = gt911::lastY;
-        static uint32_t lastTouchLog = 0;
-        uint32_t now = millis();
-        if (now - lastTouchLog > 250) {
-            Serial.printf("[touch] raw (%d, %d)\n", tx, ty);
-            lastTouchLog = now;
-        }
         int idx = hitTest(tx, ty);
-        if (idx != pressedButton) {
+
+        // Stability — finger must land on the SAME button for two
+        // consecutive polls before we lock it in. Sliding across the
+        // screen doesn't accidentally pick up whichever button you're
+        // passing over.
+        if (idx == candidateIdx) {
+            candidateHits++;
+        } else {
+            candidateIdx = idx;
+            candidateHits = 1;
+        }
+
+        if (candidateHits >= SAME_BUTTON_HITS && candidateIdx != pressedButton) {
             int prev = pressedButton;
-            pressedButton = idx;
-            if (prev >= 0) drawButton(prev);
-            if (idx >= 0)  drawButton(idx);
+            pressedButton = candidateIdx;
+            pressStartMs = now;
+            static uint32_t lastTouchLog = 0;
+            if (now - lastTouchLog > 250) {
+                Serial.printf("[touch] press (%d,%d) → btn=%d\n",
+                              tx, ty, pressedButton);
+                lastTouchLog = now;
+            }
+            if (prev >= 0)            drawButton(prev);
+            if (pressedButton >= 0)   drawButton(pressedButton);
         }
     } else if (pressedButton >= 0) {
-        // Released — fire the action of the currently-pressed button.
+        // Released — only fire if the press lasted long enough to
+        // count as deliberate. Short brushes are dropped silently.
         int idx = pressedButton;
+        uint32_t held = now - pressStartMs;
         pressedButton = -1;
+        candidateIdx = -1;
+        candidateHits = 0;
         drawButton(idx);
-        pendingAction = buttons[idx].action;
-        Serial.printf("[touch] release btn=%d \"%s\" → action=%d\n",
-                      idx, buttons[idx].label, (int)pendingAction);
+        if (held >= MIN_PRESS_MS) {
+            pendingAction = buttons[idx].action;
+            lastFireMs = now;
+            Serial.printf("[touch] release btn=%d \"%s\" held=%ums → action=%d\n",
+                          idx, buttons[idx].label, (unsigned)held,
+                          (int)pendingAction);
+        } else {
+            Serial.printf("[touch] short tap on btn=%d (held=%ums, dropped)\n",
+                          idx, (unsigned)held);
+        }
+    } else {
+        // No touch + no pressed button: reset the candidate so a fresh
+        // gesture starts from zero.
+        candidateIdx = -1;
+        candidateHits = 0;
     }
 }
 
