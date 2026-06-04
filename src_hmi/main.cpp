@@ -106,6 +106,66 @@ namespace gt911 {
         return i == n;
     }
 
+    // Chunked sequential write — Wire's default 128-byte buffer can't hold
+    // the 185-byte config payload in one transaction, so we split it into
+    // 16-byte runs and advance the register address each time.
+    static bool writeRegs(uint16_t reg, const uint8_t* buf, int n) {
+        constexpr int CHUNK = 16;
+        for (int off = 0; off < n; off += CHUNK) {
+            int len = (n - off > CHUNK) ? CHUNK : (n - off);
+            Wire.beginTransmission(ADDR);
+            Wire.write((uint8_t)((reg + off) >> 8));
+            Wire.write((uint8_t)((reg + off) & 0xFF));
+            for (int i = 0; i < len; i++) Wire.write(buf[off + i]);
+            if (Wire.endTransmission() != 0) {
+                Serial.printf("[gt911] writeRegs chunk @0x%04X (%d bytes) FAILED\n",
+                              reg + off, len);
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Verified 800x480 GT911 config blob from bekencorp/armino production
+    // firmware (middleware/driver/tp/tp_gt911.c, single-touch variant ver 0x42).
+    // 184 cfg bytes (0x8047-0x80FE) + 1 checksum (0x80FF). After writing the
+    // 185 bytes, set 0x8100 = 1 ("config_fresh") to apply.
+    // Header: ver=0x42, x_max=0x0320 (800), y_max=0x01E0 (480), touch_pts=1.
+    static constexpr uint8_t CFG_800x480[185] = {
+        0x42, 0x20, 0x03, 0xE0, 0x01, 0x01, 0x3D, 0x00, 0x01, 0x08, 0x28, 0x05, 0x50, 0x32, 0x03, 0x05,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x18, 0x1A, 0x1F, 0x14, 0x8C, 0x24, 0x0A, 0x1B, 0x19,
+        0xF4, 0x0A, 0x00, 0x00, 0x00, 0x20, 0x04, 0x1C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x64, 0x32,
+        0x00, 0x00, 0x00, 0x11, 0xB2, 0x94, 0xC5, 0x02, 0x07, 0x00, 0x00, 0x04, 0x8E, 0x16, 0x00, 0x5D,
+        0x23, 0x00, 0x3D, 0x38, 0x00, 0x2A, 0x5A, 0x00, 0x22, 0x90, 0x00, 0x22, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x14, 0x12, 0x10, 0x0E, 0x0C, 0x0A, 0x08, 0x06, 0x04, 0x02, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x1D, 0x1C,
+        0x18, 0x16, 0x14, 0x13, 0x12, 0x10, 0x0F, 0x0C, 0x0A, 0x08, 0x06, 0x04, 0x02, 0x00, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
+        0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x4F
+    };
+
+    // One-shot: only fires when the chip reports no factory config loaded
+    // (0xFF) or a version older than what's compiled in. Otherwise we
+    // leave the chip's burned-in tuning alone.
+    static bool writeFactoryConfig() {
+        Serial.println("[gt911] writing 800x480 config blob (Beken/armino, ver 0x42)");
+        if (!writeRegs(0x8047, CFG_800x480, sizeof(CFG_800x480))) {
+            Serial.println("[gt911] config payload write FAILED — i2c bus issue?");
+            return false;
+        }
+        if (!writeReg(0x8100, 0x01)) {
+            Serial.println("[gt911] config commit (0x8100<-1) FAILED");
+            return false;
+        }
+        delay(250);  // chip needs ~200 ms to apply + restart scanning
+        uint8_t cfgver = 0;
+        readRegs(0x8047, &cfgver, 1);
+        Serial.printf("[gt911] post-write config version = 0x%02X (want 0x42)\n", cfgver);
+        return cfgver == 0x42;
+    }
+
     static void begin() {
         uint8_t id[5] = {0};
         if (readRegs(REG_PROD_ID, id, 4)) {
@@ -120,18 +180,26 @@ namespace gt911 {
             Serial.printf("[gt911] firmware = 0x%02X%02X\n", fw[1], fw[0]);
         }
 
-        // Keep init minimal — just put the command register in normal
-        // scan mode and clear the status byte. The factory-restore
-        // command 0x05 isn't supported on every GT911 firmware revision
-        // and locked up the i2c bus on one revision tested.
+        // Probe config version. 0xFF = no factory config loaded; the
+        // chip will refuse to scan until we write a valid blob. Some
+        // CrowPanel units ship with the GT911 NVRAM blank, so we fall
+        // back to a hardcoded 800x480 config in that case.
+        uint8_t cfgver = 0;
+        readRegs(0x8047, &cfgver, 1);
+        Serial.printf("[gt911] config version = 0x%02X\n", cfgver);
+        if (cfgver == 0xFF || cfgver < 0x42) {
+            Serial.println("[gt911] no valid config — writing fallback blob");
+            writeFactoryConfig();
+        }
+
+        // Always end in normal-scan mode with a cleared status byte so
+        // the first real touch produces a "buffer ready" event.
         writeReg(REG_COMMAND, 0x00);
         delay(10);
         writeReg(REG_STATUS, 0);
-        uint8_t cfgver = 0;
-        readRegs(0x8047, &cfgver, 1);
-        Serial.printf("[gt911] config version = 0x%02X (0xFF means no factory cfg loaded)\n", cfgver);
         Serial.println("[gt911] init complete, polling enabled");
     }
+
 
     static void poll() {
         pollCount++;
