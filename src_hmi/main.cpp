@@ -20,7 +20,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
-#include <WebServer.h>
+#include "esp_http_server.h"
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
 
@@ -293,8 +293,11 @@ static bool firstFullDraw = true;
 
 // HTTP server on port 80 — same REST shape as src_scoreboard/scoreboard.cpp
 // so existing camera firmware can point SCOREBOARD_IP at this device with
-// zero protocol changes.
-static WebServer server(80);
+// zero protocol changes. Uses esp_http_server (same stack the cameras use)
+// instead of WebServer.h — the latter exhausted its 5-socket pool under
+// integration-test burst load (port 80 starts refusing connections after
+// ~70 rapid requests). esp_http_server allows 10 sockets + LRU purge.
+static httpd_handle_t server = NULL;
 
 // Dirty flags set by the background polling task (core 0). The main loop
 // (core 1) checks them every iteration and re-renders only what changed,
@@ -392,58 +395,117 @@ static bool extractBoolField(const String& body, const char* key, bool* out) {
 // =============================================================
 // REST handlers — mirror src_scoreboard/scoreboard.cpp so cameras and
 // the integration test suite can't tell the HMI from the LED placar.
+//
+// All handlers run on the esp_http_server background task (not the main
+// loop), so they touch state via the same placarA/placarB volatile vars
+// the touch dispatch path already uses. State writes here race-free
+// against single-byte volatile reads on core 1 — same pattern as the
+// camera firmware.
 // =============================================================
-static void sendJson(int code, const String& body) {
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.send(code, "application/json", body);
+static esp_err_t send_json(httpd_req_t* req, int code, const char* body) {
+    if      (code == 400) httpd_resp_set_status(req, "400 Bad Request");
+    else if (code == 500) httpd_resp_set_status(req, "500 Internal Server Error");
+    // Default 200 OK doesn't need explicit set.
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
-static String statusJson() {
-    String ip = WiFi.localIP().toString();
-    return String("{\"role\":\"scoreboard\",\"a\":") + (int)placarA +
-           ",\"b\":" + (int)placarB + ",\"ip\":\"" + ip + "\"}";
+static int build_status_json(char* buf, size_t n) {
+    // WiFi.localIP() returns an IPAddress; toString() builds a String each
+    // call. We snprintf the dotted-quad directly to avoid the heap churn.
+    IPAddress ip = WiFi.localIP();
+    return snprintf(buf, n,
+        "{\"role\":\"scoreboard\",\"a\":%d,\"b\":%d,\"ip\":\"%u.%u.%u.%u\"}",
+        (int)placarA, (int)placarB,
+        ip[0], ip[1], ip[2], ip[3]);
 }
 
-static void handleStatus() { sendJson(200, statusJson()); }
-
-static void handleGoal() {
-    String side = server.arg("side"); side.toLowerCase();
-    if      (side == "a") { if (placarA < 99) { placarA++; dirtyDigits = true; } }
-    else if (side == "b") { if (placarB < 99) { placarB++; dirtyDigits = true; } }
-    else { sendJson(400, "{\"ok\":false,\"err\":\"side must be a or b\"}"); return; }
-    String body = String("{\"ok\":true,\"side\":\"") + side + "\",\"a\":" + (int)placarA +
-                  ",\"b\":" + (int)placarB + "}";
-    sendJson(200, body);
+// Pull a single query-string key. Returns true if found; the value is
+// lowercase-normalized in place for case-insensitive comparison.
+static bool query_get_lower(httpd_req_t* req, const char* key,
+                            char* out, size_t outsz) {
+    char buf[64];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) != ESP_OK) return false;
+    if (httpd_query_key_value(buf, key, out, outsz) != ESP_OK) return false;
+    for (char* p = out; *p; ++p) if (*p >= 'A' && *p <= 'Z') *p += 32;
+    return true;
 }
 
-static void handleGoalUndo() {
-    String side = server.arg("side"); side.toLowerCase();
-    if      (side == "a") { if (placarA > 0) { placarA--; dirtyDigits = true; } }
-    else if (side == "b") { if (placarB > 0) { placarB--; dirtyDigits = true; } }
-    else { sendJson(400, "{\"ok\":false,\"err\":\"side must be a or b\"}"); return; }
-    String body = String("{\"ok\":true,\"side\":\"") + side + "\",\"a\":" + (int)placarA +
-                  ",\"b\":" + (int)placarB + "}";
-    sendJson(200, body);
+static esp_err_t handle_status(httpd_req_t* req) {
+    char body[96];
+    build_status_json(body, sizeof(body));
+    return send_json(req, 200, body);
 }
 
-static void handleApiReset() {
+static esp_err_t handle_goal(httpd_req_t* req) {
+    char side[4];
+    if (!query_get_lower(req, "side", side, sizeof(side))) {
+        return send_json(req, 400, "{\"ok\":false,\"err\":\"side must be a or b\"}");
+    }
+    if      (side[0] == 'a' && !side[1]) { if (placarA < 99) { placarA++; dirtyDigits = true; } }
+    else if (side[0] == 'b' && !side[1]) { if (placarB < 99) { placarB++; dirtyDigits = true; } }
+    else {
+        return send_json(req, 400, "{\"ok\":false,\"err\":\"side must be a or b\"}");
+    }
+    char body[80];
+    snprintf(body, sizeof(body), "{\"ok\":true,\"side\":\"%c\",\"a\":%d,\"b\":%d}",
+             side[0], (int)placarA, (int)placarB);
+    return send_json(req, 200, body);
+}
+
+static esp_err_t handle_goal_undo(httpd_req_t* req) {
+    char side[4];
+    if (!query_get_lower(req, "side", side, sizeof(side))) {
+        return send_json(req, 400, "{\"ok\":false,\"err\":\"side must be a or b\"}");
+    }
+    if      (side[0] == 'a' && !side[1]) { if (placarA > 0) { placarA--; dirtyDigits = true; } }
+    else if (side[0] == 'b' && !side[1]) { if (placarB > 0) { placarB--; dirtyDigits = true; } }
+    else {
+        return send_json(req, 400, "{\"ok\":false,\"err\":\"side must be a or b\"}");
+    }
+    char body[80];
+    snprintf(body, sizeof(body), "{\"ok\":true,\"side\":\"%c\",\"a\":%d,\"b\":%d}",
+             side[0], (int)placarA, (int)placarB);
+    return send_json(req, 200, body);
+}
+
+static esp_err_t handle_api_reset(httpd_req_t* req) {
     placarA = 0; placarB = 0; dirtyDigits = true;
-    sendJson(200, "{\"ok\":true,\"a\":0,\"b\":0}");
+    return send_json(req, 200, "{\"ok\":true,\"a\":0,\"b\":0}");
 }
 
 // Legacy / browser-dashboard endpoints — same handlers the LED placar
 // exposed, so any existing tooling that pokes /a+, /b+, /az, /bz, /reset
 // still works against this device.
-static void handleAplus()  { if (placarA < 99) { placarA++; dirtyDigits = true; } sendJson(200, statusJson()); }
-static void handleBplus()  { if (placarB < 99) { placarB++; dirtyDigits = true; } sendJson(200, statusJson()); }
-static void handleAzero()  { placarA = 0; dirtyDigits = true; sendJson(200, statusJson()); }
-static void handleBzero()  { placarB = 0; dirtyDigits = true; sendJson(200, statusJson()); }
-static void handleReset()  { handleApiReset(); }
+static esp_err_t handle_a_plus(httpd_req_t* req) {
+    if (placarA < 99) { placarA++; dirtyDigits = true; }
+    char body[96]; build_status_json(body, sizeof(body));
+    return send_json(req, 200, body);
+}
+static esp_err_t handle_b_plus(httpd_req_t* req) {
+    if (placarB < 99) { placarB++; dirtyDigits = true; }
+    char body[96]; build_status_json(body, sizeof(body));
+    return send_json(req, 200, body);
+}
+static esp_err_t handle_a_zero(httpd_req_t* req) {
+    placarA = 0; dirtyDigits = true;
+    char body[96]; build_status_json(body, sizeof(body));
+    return send_json(req, 200, body);
+}
+static esp_err_t handle_b_zero(httpd_req_t* req) {
+    placarB = 0; dirtyDigits = true;
+    char body[96]; build_status_json(body, sizeof(body));
+    return send_json(req, 200, body);
+}
+static esp_err_t handle_reset(httpd_req_t* req) {
+    return handle_api_reset(req);
+}
 
 // Diagnostic: snapshot of what the GT911 has reported lately. Curl this
 // from a laptop to check whether the chip is scanning at all without
 // needing a serial cable: `curl -s http://192.168.40.89/debug/touch`.
-static void handleDebugTouch() {
+static esp_err_t handle_debug_touch(httpd_req_t* req) {
     char body[384];
     snprintf(body, sizeof(body),
         "{\"prod_id\":\"%s\",\"fw\":\"0x%04X\",\"boot_cfg_ver\":\"0x%02X\","
@@ -456,19 +518,19 @@ static void handleDebugTouch() {
         (unsigned)gt911::pollCount, (unsigned)gt911::touchCount,
         gt911::lastStatus, gt911::lastX, gt911::lastY,
         gt911::touched ? "true" : "false");
-    sendJson(200, body);
+    return send_json(req, 200, body);
 }
 
 // Force-rewrite of the fallback config blob even if a factory config
 // is currently loaded. Use to recover a chip whose config got corrupted
 // by an earlier experiment. `curl http://192.168.40.89/debug/gt911-rewrite`.
-static void handleDebugRewrite() {
+static esp_err_t handle_debug_rewrite(httpd_req_t* req) {
     bool ok = gt911::writeFactoryConfig();
     char body[128];
     snprintf(body, sizeof(body),
         "{\"ok\":%s,\"post_cfg_ver\":\"0x%02X\"}",
         ok ? "true" : "false", gt911::postCfgVer);
-    sendJson(ok ? 200 : 500, body);
+    return send_json(req, ok ? 200 : 500, body);
 }
 
 // RST-pin sweep was attempted (and DELETED) — almost every general-purpose
@@ -483,19 +545,39 @@ static void handleDebugRewrite() {
 // prevent accidental panel damage from a stray curl.
 
 static void startWebServer() {
-    server.on("/status",            HTTP_GET, handleStatus);
-    server.on("/goal",              HTTP_GET, handleGoal);
-    server.on("/goal-undo",         HTTP_GET, handleGoalUndo);
-    server.on("/api/reset",         HTTP_GET, handleApiReset);
-    server.on("/reset",             HTTP_GET, handleReset);
-    server.on("/a+",                HTTP_GET, handleAplus);
-    server.on("/b+",                HTTP_GET, handleBplus);
-    server.on("/az",                HTTP_GET, handleAzero);
-    server.on("/bz",                HTTP_GET, handleBzero);
-    server.on("/debug/touch",         HTTP_GET, handleDebugTouch);
-    server.on("/debug/gt911-rewrite", HTTP_GET, handleDebugRewrite);
-    server.begin();
-    Serial.println("[http] placar API started on port 80");
+    httpd_config_t config = HTTPD_DEFAULT_CONFIG();
+    config.server_port      = 80;
+    config.ctrl_port        = 32768;
+    config.max_uri_handlers = 16;
+    config.max_open_sockets = 10;   // up from WebServer's default 5
+    config.lru_purge_enable = true; // kick oldest connection when full
+    config.stack_size       = 8192;
+
+    if (httpd_start(&server, &config) != ESP_OK) {
+        Serial.println("[http] FAILED to start esp_http_server");
+        return;
+    }
+
+    struct UriDef { const char* uri; esp_err_t (*h)(httpd_req_t*); };
+    UriDef routes[] = {
+        { "/status",             handle_status        },
+        { "/goal",               handle_goal          },
+        { "/goal-undo",          handle_goal_undo     },
+        { "/api/reset",          handle_api_reset     },
+        { "/reset",              handle_reset         },
+        { "/a+",                 handle_a_plus        },
+        { "/b+",                 handle_b_plus        },
+        { "/az",                 handle_a_zero        },
+        { "/bz",                 handle_b_zero        },
+        { "/debug/touch",        handle_debug_touch   },
+        { "/debug/gt911-rewrite",handle_debug_rewrite },
+    };
+    for (auto& r : routes) {
+        httpd_uri_t u = { .uri = r.uri, .method = HTTP_GET,
+                          .handler = r.h, .user_ctx = NULL };
+        httpd_register_uri_handler(server, &u);
+    }
+    Serial.println("[http] placar API started on port 80 (esp_http_server)");
 }
 
 // =============================================================
@@ -907,9 +989,12 @@ void loop() {
     // Touch first so button feedback feels instant.
     serviceTouch();
 
-    // Service HTTP — placar API runs on this thread (handlers update
-    // placarA/placarB + dirtyDigits, so no cross-thread renderer call).
-    server.handleClient();
+    // esp_http_server runs on its own background task (configured with
+    // 10 max sockets + LRU purge), so there's no handleClient() to call
+    // from the main loop. The REST handlers update placarA/placarB +
+    // dirtyDigits atomically (single-byte volatile writes), so the main
+    // loop re-renders consistently on the next pass through the dirty
+    // flags below.
 
     if (pendingAction != ACT_NONE) {
         ActionId a = pendingAction;
