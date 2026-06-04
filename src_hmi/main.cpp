@@ -277,6 +277,14 @@ struct CamState {
     bool calibrated = false;
     int  goals = 0;
     uint32_t lastPollMs = 0;
+    // Extra fields pulled from /status during calibration. None of these
+    // are touched by the score path, so racing reads from the main loop
+    // are harmless (worst case: one stale frame of overlay text).
+    int  motionTh = 0;
+    int  colorTh = 0;
+    int  calContrast = 0;
+    bool hasCalSnap = false;
+    char calMsg[40] = {0};
 };
 static CamState camA;
 static CamState camB;
@@ -306,6 +314,38 @@ static volatile bool dirtyHeader  = false;
 static volatile bool dirtyDigits  = false;
 static volatile bool dirtyStatus  = false;
 static volatile bool dirtyButtons = false;
+static volatile bool dirtyOverlay = false;
+
+// =============================================================
+// Calibration overlay — full-screen modal that takes over the score +
+// button area while a camera /calibrate is in progress. Tapping CAL A
+// or CAL B fires the HTTP request to the camera AND raises the overlay
+// for instant feedback (so the operator never wonders whether the tap
+// landed). The overlay shows the cam's live `calMsg` plus a coarse
+// progress bar driven by hasCalSnap + calContrast.
+//
+// When the cam transitions from state=1 (CALIBRATING) back to anything
+// else, the overlay switches to a 3-second RESULT phase showing OK +
+// learned thresholds or FAIL + retry hint, then dismisses itself and
+// redraws the underlying placar view.
+//
+// Touch is *not* fully modal: REST pushes from the cameras (/goal) still
+// update placarA/placarB during calibration, but on-screen taps that
+// would have hit the placar buttons under the overlay are ignored
+// (operator only sees the overlay). One on-overlay "Cancelar" button
+// aborts by /reset-ing the cam being calibrated.
+// =============================================================
+struct CalOverlay {
+    int8_t   side;             // 0 = A (HOME), 1 = B (AWAY), -1 = OFF
+    int8_t   phase;            // 0=RUNNING, 1=RESULT_OK, 2=RESULT_FAIL
+    uint32_t resultUntilMs;    // millis() deadline for auto-dismiss
+    int8_t   trackedState;     // last cam.state we observed, for edge detect
+};
+static volatile CalOverlay calOverlay = { -1, 0, 0, -1 };
+
+// "Cancelar" button on the overlay — only hit-tested while overlay is up.
+// Lives centred near the bottom of the overlay rect.
+constexpr int CANCEL_X = 280, CANCEL_Y = 340, CANCEL_W = 240, CANCEL_H = 60;
 
 // =============================================================
 // Buttons. Hit-tested against raw touch coords; the action callback
@@ -316,6 +356,7 @@ enum ActionId {
     ACT_NONE = 0,
     ACT_CAL_A,
     ACT_CAL_B,
+    ACT_CAL_CANCEL,
     ACT_START_PAUSE,
     ACT_RESET_ALL,
     ACT_A_PLUS,
@@ -379,6 +420,25 @@ static bool extractIntField(const String& body, const char* key, int* out) {
                                        (body[j] >= '0' && body[j] <= '9'))) j++;
     if (j == start) return false;
     *out = body.substring(start, j).toInt();
+    return true;
+}
+
+// Lift a JSON string field into a fixed char buffer. Truncates silently.
+// Does NOT handle backslash-escaped quotes — the camera's calMsg is a
+// curated set of short Portuguese phrases without embedded quotes.
+static bool extractStringField(const String& body, const char* key,
+                               char* out, size_t outSz) {
+    if (outSz == 0) return false;
+    String pat = String("\"") + key + "\":\"";
+    int i = body.indexOf(pat);
+    if (i < 0) return false;
+    int start = i + pat.length();
+    int end = body.indexOf('"', start);
+    if (end < 0) return false;
+    size_t len = (size_t)(end - start);
+    if (len >= outSz) len = outSz - 1;
+    for (size_t k = 0; k < len; k++) out[k] = body.charAt(start + k);
+    out[len] = '\0';
     return true;
 }
 
@@ -614,10 +674,40 @@ static void runAction(ActionId a) {
     switch (a) {
         case ACT_CAL_A:
             httpKick(String("http://") + camA.ip + "/calibrate");
+            // Raise the overlay immediately for instant feedback. The
+            // poll loop will pick up cam.state=1 within 1 s, but the
+            // operator shouldn't have to wait that long to know their
+            // tap registered.
+            calOverlay.side          = 0;
+            calOverlay.phase         = 0;
+            calOverlay.trackedState  = camA.state;
+            calOverlay.resultUntilMs = 0;
+            dirtyOverlay             = true;
             break;
         case ACT_CAL_B:
             httpKick(String("http://") + camB.ip + "/calibrate");
+            calOverlay.side          = 1;
+            calOverlay.phase         = 0;
+            calOverlay.trackedState  = camB.state;
+            calOverlay.resultUntilMs = 0;
+            dirtyOverlay             = true;
             break;
+        case ACT_CAL_CANCEL: {
+            // Send /reset to the cam so it leaves CALIBRATING immediately,
+            // then collapse the overlay. The next poll will see state=0
+            // and naturally trigger the dismiss path, but we don't need to
+            // wait for it.
+            if (calOverlay.side == 0)      httpKick(String("http://") + camA.ip + "/reset");
+            else if (calOverlay.side == 1) httpKick(String("http://") + camB.ip + "/reset");
+            calOverlay.phase         = 0;
+            calOverlay.side          = -1;
+            calOverlay.resultUntilMs = 0;
+            // Repaint everything the overlay covered.
+            dirtyDigits  = true;
+            dirtyButtons = true;
+            dirtyStatus  = true;
+            break;
+        }
         case ACT_START_PAUSE: {
             bool anyPlaying = (camA.state == 2) || (camB.state == 2);
             bool anyPaused  = (camA.state == 3) || (camB.state == 3);
@@ -759,6 +849,150 @@ static void renderFull() {
     drawSideStatus();
 }
 
+// =============================================================
+// Calibration overlay rendering. Covers y=65 → y=420 of the panel
+// (everything from below the header through the buttons; the
+// HOME/AWAY status pills at y=405+ stay visible underneath so the
+// operator can still see whether the cam is online during cal).
+// =============================================================
+constexpr int OVL_X = 20, OVL_Y = 75, OVL_W = 760, OVL_H = 325;
+
+static void drawCalOverlay() {
+    // Snapshot the volatile fields one at a time — copying a volatile
+    // struct directly isn't allowed by the language.
+    CalOverlay ov;
+    ov.side          = calOverlay.side;
+    ov.phase         = calOverlay.phase;
+    ov.resultUntilMs = calOverlay.resultUntilMs;
+    ov.trackedState  = calOverlay.trackedState;
+    if (ov.side < 0) return;
+    const CamState& c = (ov.side == 0) ? camA : camB;
+    const char* sideLabel = (ov.side == 0) ? "Lado A (HOME)" : "Lado B (AWAY)";
+
+    // Background panel.
+    gfx->fillRoundRect(OVL_X, OVL_Y, OVL_W, OVL_H, 14, 0x18E3);
+    gfx->drawRoundRect(OVL_X, OVL_Y, OVL_W, OVL_H, 14, COL_LABEL);
+
+    // Title row.
+    char title[64];
+    if (ov.phase == 1) {
+        snprintf(title, sizeof(title), "Calibrado %s", sideLabel);
+    } else if (ov.phase == 2) {
+        snprintf(title, sizeof(title), "Falhou %s", sideLabel);
+    } else {
+        snprintf(title, sizeof(title), "Calibrando %s", sideLabel);
+    }
+    uint16_t titleCol = (ov.phase == 1) ? COL_GREEN
+                       : (ov.phase == 2) ? COL_RED
+                       : 0xFD20;  // orange (CAL...)
+    gfx->setTextSize(3);
+    gfx->setTextColor(titleCol, 0x18E3);
+    int tw = (int)strlen(title) * 18;
+    gfx->setCursor(OVL_X + (OVL_W - tw) / 2, OVL_Y + 22);
+    gfx->print(title);
+
+    if (ov.phase == 0) {
+        // RUNNING phase: instructions + live calMsg + progress bar.
+        const char* sub = "Coloque o dadinho dentro do gol";
+        int sw = (int)strlen(sub) * 12;
+        gfx->setTextSize(2);
+        gfx->setTextColor(COL_WHITE, 0x18E3);
+        gfx->setCursor(OVL_X + (OVL_W - sw) / 2, OVL_Y + 80);
+        gfx->print(sub);
+
+        // calMsg from the camera. Truncate at 36 chars to fit on one
+        // line at text size 2 in our 760-px-wide overlay.
+        char msg[40];
+        snprintf(msg, sizeof(msg), "%s", c.calMsg[0] ? c.calMsg : "(aguardando…)");
+        int mw = (int)strlen(msg) * 12;
+        if (mw > OVL_W - 40) mw = OVL_W - 40;
+        gfx->setTextColor(0xFD20, 0x18E3);  // orange
+        gfx->setCursor(OVL_X + (OVL_W - mw) / 2, OVL_Y + 130);
+        gfx->print(msg);
+
+        // Progress bar: coarse 3-stop track driven by hasCalSnap and
+        // the cam's reported calContrast. Just a visual cue — the cam
+        // doesn't expose a 0..100 percentage.
+        int barX = OVL_X + 60, barY = OVL_Y + 180;
+        int barW = OVL_W - 120, barH = 22;
+        gfx->drawRoundRect(barX, barY, barW, barH, 6, COL_LABEL);
+        int fill = 0;
+        if (c.state == 1) fill = 25;             // entered CAL state
+        if (c.hasCalSnap) fill = 60;             // snapshot captured
+        if (c.calContrast > 0) fill = 90;        // contrast measured
+        if (fill > 0) {
+            int fw = (barW - 4) * fill / 100;
+            gfx->fillRoundRect(barX + 2, barY + 2, fw, barH - 4, 4, 0xFD20);
+        }
+    } else {
+        // RESULT phase: show the learned thresholds (OK) or a hint (FAIL).
+        char line1[64], line2[64];
+        if (ov.phase == 1) {
+            snprintf(line1, sizeof(line1), "Limiares aprendidos:");
+            snprintf(line2, sizeof(line2), "mov=%d   cor=%d   cont=%d",
+                     c.motionTh, c.colorTh, c.calContrast);
+        } else {
+            snprintf(line1, sizeof(line1), "Sem dadinho detectado");
+            snprintf(line2, sizeof(line2), "Posicione e toque CAL novamente");
+        }
+        gfx->setTextSize(2);
+        gfx->setTextColor(COL_WHITE, 0x18E3);
+        int l1w = (int)strlen(line1) * 12;
+        gfx->setCursor(OVL_X + (OVL_W - l1w) / 2, OVL_Y + 110);
+        gfx->print(line1);
+        int l2w = (int)strlen(line2) * 12;
+        gfx->setCursor(OVL_X + (OVL_W - l2w) / 2, OVL_Y + 160);
+        gfx->print(line2);
+    }
+
+    // Cancelar button — only shown in RUNNING phase.
+    if (ov.phase == 0) {
+        gfx->fillRoundRect(CANCEL_X, CANCEL_Y, CANCEL_W, CANCEL_H, 10, 0x6000);
+        gfx->drawRoundRect(CANCEL_X, CANCEL_Y, CANCEL_W, CANCEL_H, 10, COL_WHITE);
+        gfx->setTextSize(3);
+        gfx->setTextColor(COL_WHITE, 0x6000);
+        const char* cancelLabel = "Cancelar";
+        int cw = (int)strlen(cancelLabel) * 18;
+        gfx->setCursor(CANCEL_X + (CANCEL_W - cw) / 2,
+                       CANCEL_Y + (CANCEL_H - 24) / 2);
+        gfx->print(cancelLabel);
+    }
+}
+
+// State machine — called once per loop iteration. Watches cam.state
+// transitions to flip the overlay's phase. Dismisses itself when the
+// result window expires.
+static void updateCalOverlay() {
+    if (calOverlay.side < 0) return;
+    CamState& c = (calOverlay.side == 0) ? camA : camB;
+
+    if (calOverlay.phase == 0) {
+        // RUNNING — watch for cam leaving the CALIBRATING state. The
+        // tracked-state field lets us detect the exact 1→0 edge even if
+        // the poll loop missed a frame.
+        int8_t prev = calOverlay.trackedState;
+        calOverlay.trackedState = (int8_t)c.state;
+        if (prev == 1 && c.state != 1) {
+            calOverlay.phase         = c.calibrated ? 1 : 2;
+            calOverlay.resultUntilMs = millis() + 3000;
+            dirtyOverlay             = true;
+        }
+    } else {
+        // RESULT_OK or RESULT_FAIL — auto-dismiss after 3 s.
+        if ((int32_t)(millis() - calOverlay.resultUntilMs) >= 0) {
+            calOverlay.side          = -1;
+            calOverlay.phase         = 0;
+            calOverlay.resultUntilMs = 0;
+            // Repaint everything the overlay was covering.
+            dirtyDigits  = true;
+            dirtyButtons = true;
+            dirtyStatus  = true;
+        }
+    }
+}
+
+static bool overlayActive() { return calOverlay.side >= 0; }
+
 static void renderSplash(const char* msg, uint16_t col) {
     gfx->fillScreen(COL_BG);
     firstFullDraw = false;
@@ -776,6 +1010,20 @@ static void renderSplash(const char* msg, uint16_t col) {
 // button to cancel without firing).
 // =============================================================
 static int hitTest(int x, int y) {
+    // When the calibration overlay is up, the placar buttons are visually
+    // obscured. Don't accept taps that fall through to them — only the
+    // overlay's Cancelar button should respond. We signal that by
+    // returning -2 (vs -1 = "missed all buttons") so the touch loop can
+    // route a Cancelar hit to ACT_CAL_CANCEL without firing the wrong
+    // placar action.
+    if (overlayActive()) {
+        if (calOverlay.phase == 0 &&
+            x >= CANCEL_X && x < CANCEL_X + CANCEL_W &&
+            y >= CANCEL_Y && y < CANCEL_Y + CANCEL_H) {
+            return -2;  // Cancelar rect, see serviceTouch()
+        }
+        return -1;  // tap missed Cancelar (or in RESULT phase) — swallow
+    }
     for (int i = 0; i < NUM_BUTTONS; i++) {
         const Button& b = buttons[i];
         if (x >= b.x && x < b.x + b.w && y >= b.y && y < b.y + b.h) return i;
@@ -821,6 +1069,14 @@ static void serviceTouch() {
         Serial.printf("[touch] FIRE btn=%d \"%s\" at (%d,%d)\n",
                       btn, buttons[btn].label,
                       gt911::lastX, gt911::lastY);
+    }
+
+    // Cancelar on the overlay — hitTest returned -2 to flag this.
+    if (!inCooldown && btn == -2 && lastFiredBtn != -2) {
+        pendingAction = ACT_CAL_CANCEL;
+        lastFireMs    = now;
+        lastFiredBtn  = -2;
+        Serial.println("[touch] FIRE Cancelar (overlay)");
     }
 
     // After cooldown AND finger truly off, clear the "last fired" lock
@@ -879,15 +1135,34 @@ static void pollCam(CamState& c) {
     http.end();
     int st = c.state, goals = c.goals;
     bool cal = c.calibrated;
+    int motTh = c.motionTh, colTh = c.colorTh, calCtr = c.calContrast;
+    bool hasSnap = c.hasCalSnap;
+    char prevMsg[sizeof(c.calMsg)];
+    memcpy(prevMsg, c.calMsg, sizeof(prevMsg));
+
     extractIntField(body, "state", &st);
     extractIntField(body, "goals", &goals);
     extractBoolField(body, "calibrated", &cal);
+    extractIntField(body, "motionTh", &motTh);
+    extractIntField(body, "colorTh", &colTh);
+    extractIntField(body, "calContrast", &calCtr);
+    extractBoolField(body, "hasCalSnap", &hasSnap);
+    extractStringField(body, "calMsg", c.calMsg, sizeof(c.calMsg));
+
     bool changed = !c.online || st != c.state || cal != c.calibrated;
-    c.online = true; c.state = st; c.calibrated = cal; c.goals = goals;
+    bool msgChanged = (memcmp(prevMsg, c.calMsg, sizeof(prevMsg)) != 0);
+    c.online = true;
+    c.state = st; c.calibrated = cal; c.goals = goals;
+    c.motionTh = motTh; c.colorTh = colTh; c.calContrast = calCtr;
+    c.hasCalSnap = hasSnap;
     if (changed) {
         dirtyStatus = true;
         dirtyButtons = true;  // START/PAUSE label tracks cam state (index 5)
     }
+    // The calibration overlay re-renders every time the cam's text or
+    // progress markers move forward, even within a single state. This
+    // is the only path that drives the overlay's live feedback.
+    if (changed || msgChanged) dirtyOverlay = true;
 }
 
 // Background worker on core 0. Drains queued UI actions and polls the
@@ -1002,14 +1277,31 @@ void loop() {
         runAction(a);
     }
 
+    // Drive the calibration-overlay state machine BEFORE redrawing so
+    // any auto-dismiss this iteration sets the underlying dirty flags
+    // in time to repaint the placar view on the same frame.
+    updateCalOverlay();
+
     // Re-render whatever the polling task on core 0 marked dirty. Order
     // matters so overlapping rects redraw correctly (header before
-    // digits before buttons before status).
+    // digits before buttons before status, overlay on top of everything).
+    // While the overlay is up, the score/button/status redraws below are
+    // wasted pixels — but they're also covered by the overlay rect on
+    // the same frame, so the user only ever sees the overlay layer.
     if (dirtyHeader)  { dirtyHeader  = false; drawHeader(); }
     if (dirtyDigits)  { dirtyDigits  = false; drawScoreDigits(); }
     // START is the 6th button (index 5) after the 4 score-adjust buttons.
     if (dirtyButtons) { dirtyButtons = false; drawButton(5); }
     if (dirtyStatus)  { dirtyStatus  = false; drawSideStatus(); }
+
+    // Overlay paints last so it sits on top of the placar layer. It
+    // re-renders whenever pollCam() flags new calMsg / state / progress
+    // markers, when the state machine flips phase, or right after we
+    // raised it from a button tap (runAction sets dirtyOverlay).
+    if (overlayActive() && dirtyOverlay) {
+        dirtyOverlay = false;
+        drawCalOverlay();
+    }
 
     delay(2);  // small yield for FreeRTOS housekeeping
 }
