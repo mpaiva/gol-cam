@@ -20,6 +20,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WebServer.h>
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
 
@@ -120,8 +121,7 @@ namespace gt911 {
 // Camera state — both cameras polled every CAM_POLL_MS so we can render
 // status pills under HOME/AWAY without serially blocking the touch loop.
 // =============================================================
-constexpr uint32_t PLACAR_POLL_MS = 500;
-constexpr uint32_t CAM_POLL_MS    = 1000;
+constexpr uint32_t CAM_POLL_MS = 1000;
 
 struct CamState {
     const char* ip;
@@ -134,10 +134,20 @@ struct CamState {
 static CamState camA;
 static CamState camB;
 
-static volatile int placarA = -1;
-static volatile int placarB = -1;
-static volatile bool placarOnline = false;
+// HMI maintains its own score state — this device IS the placar, so
+// /status / /goal / /goal-undo / /api/reset hit local memory rather
+// than a downstream MAX7219 board. Cameras push goals here exactly as
+// they pushed to the LED placar; the LED placar can be retired or
+// kept as a passive mirror.
+static volatile int placarA = 0;
+static volatile int placarB = 0;
+static volatile bool placarOnline = true;  // we're the placar — always "online"
 static bool firstFullDraw = true;
+
+// HTTP server on port 80 — same REST shape as src_scoreboard/scoreboard.cpp
+// so existing camera firmware can point SCOREBOARD_IP at this device with
+// zero protocol changes.
+static WebServer server(80);
 
 // Dirty flags set by the background polling task (core 0). The main loop
 // (core 1) checks them every iteration and re-renders only what changed,
@@ -219,6 +229,71 @@ static bool extractBoolField(const String& body, const char* key, bool* out) {
 }
 
 // =============================================================
+// REST handlers — mirror src_scoreboard/scoreboard.cpp so cameras and
+// the integration test suite can't tell the HMI from the LED placar.
+// =============================================================
+static void sendJson(int code, const String& body) {
+    server.sendHeader("Access-Control-Allow-Origin", "*");
+    server.send(code, "application/json", body);
+}
+
+static String statusJson() {
+    String ip = WiFi.localIP().toString();
+    return String("{\"role\":\"scoreboard\",\"a\":") + (int)placarA +
+           ",\"b\":" + (int)placarB + ",\"ip\":\"" + ip + "\"}";
+}
+
+static void handleStatus() { sendJson(200, statusJson()); }
+
+static void handleGoal() {
+    String side = server.arg("side"); side.toLowerCase();
+    if      (side == "a") { if (placarA < 99) { placarA++; dirtyDigits = true; } }
+    else if (side == "b") { if (placarB < 99) { placarB++; dirtyDigits = true; } }
+    else { sendJson(400, "{\"ok\":false,\"err\":\"side must be a or b\"}"); return; }
+    String body = String("{\"ok\":true,\"side\":\"") + side + "\",\"a\":" + (int)placarA +
+                  ",\"b\":" + (int)placarB + "}";
+    sendJson(200, body);
+}
+
+static void handleGoalUndo() {
+    String side = server.arg("side"); side.toLowerCase();
+    if      (side == "a") { if (placarA > 0) { placarA--; dirtyDigits = true; } }
+    else if (side == "b") { if (placarB > 0) { placarB--; dirtyDigits = true; } }
+    else { sendJson(400, "{\"ok\":false,\"err\":\"side must be a or b\"}"); return; }
+    String body = String("{\"ok\":true,\"side\":\"") + side + "\",\"a\":" + (int)placarA +
+                  ",\"b\":" + (int)placarB + "}";
+    sendJson(200, body);
+}
+
+static void handleApiReset() {
+    placarA = 0; placarB = 0; dirtyDigits = true;
+    sendJson(200, "{\"ok\":true,\"a\":0,\"b\":0}");
+}
+
+// Legacy / browser-dashboard endpoints — same handlers the LED placar
+// exposed, so any existing tooling that pokes /a+, /b+, /az, /bz, /reset
+// still works against this device.
+static void handleAplus()  { if (placarA < 99) { placarA++; dirtyDigits = true; } sendJson(200, statusJson()); }
+static void handleBplus()  { if (placarB < 99) { placarB++; dirtyDigits = true; } sendJson(200, statusJson()); }
+static void handleAzero()  { placarA = 0; dirtyDigits = true; sendJson(200, statusJson()); }
+static void handleBzero()  { placarB = 0; dirtyDigits = true; sendJson(200, statusJson()); }
+static void handleReset()  { handleApiReset(); }
+
+static void startWebServer() {
+    server.on("/status",      HTTP_GET, handleStatus);
+    server.on("/goal",        HTTP_GET, handleGoal);
+    server.on("/goal-undo",   HTTP_GET, handleGoalUndo);
+    server.on("/api/reset",   HTTP_GET, handleApiReset);
+    server.on("/reset",       HTTP_GET, handleReset);
+    server.on("/a+",          HTTP_GET, handleAplus);
+    server.on("/b+",          HTTP_GET, handleBplus);
+    server.on("/az",          HTTP_GET, handleAzero);
+    server.on("/bz",          HTTP_GET, handleBzero);
+    server.begin();
+    Serial.println("[http] placar API started on port 80");
+}
+
+// =============================================================
 // HTTP serialisation — one worker task on core 0 owns the HTTP stack and
 // is the only thing that calls HTTPClient. UI actions and polling both
 // push commands into the same queue so concurrent HTTPClient use (which
@@ -265,13 +340,13 @@ static void runAction(ActionId a) {
             break;
         }
         case ACT_RESET_ALL:
+            // We ARE the placar — clear local counters directly, then
+            // tell the cameras to clear their goalCounts so the system
+            // is consistent end-to-end.
+            placarA = 0; placarB = 0;
+            dirtyDigits = true;
             httpKick(String("http://") + camA.ip + "/reset");
             httpKick(String("http://") + camB.ip + "/reset");
-            httpKick(String("http://" SCOREBOARD_IP "/api/reset"));
-            // Optimistic redraw — without waiting for the next placar
-            // poll, we know the score will be 0:0 after this fan-out lands.
-            placarA = 0; placarB = 0;
-            drawScoreDigits();
             break;
         case ACT_NONE: break;
     }
@@ -287,9 +362,11 @@ static void drawHeader() {
     gfx->setCursor(20, 18);
     gfx->print("gol-cam");
 
-    // Right-side status pill — colour reflects placar reachability.
-    const char* tag = placarOnline ? "PLACAR" : "OFFLINE";
-    uint16_t pillCol = placarOnline ? 0x0640 : 0x8800;
+    // Right-side status pill — green PLACAR when WiFi is up so cameras
+    // can reach our /goal endpoints, dark red OFFLINE otherwise.
+    bool wifi = (WiFi.status() == WL_CONNECTED);
+    const char* tag = wifi ? "PLACAR" : "OFFLINE";
+    uint16_t pillCol = wifi ? 0x0640 : 0x8800;
     int pillW = (int)strlen(tag) * 18 + 24;
     gfx->fillRoundRect(800 - pillW - 20, 14, pillW, 32, 6, pillCol);
     gfx->setTextSize(2);
@@ -472,35 +549,6 @@ static void connectWiFi() {
     }
 }
 
-static void pollPlacar() {
-    HTTPClient http;
-    String url = String("http://" SCOREBOARD_IP "/status");
-    if (!http.begin(url)) {
-        if (placarOnline) { placarOnline = false; dirtyHeader = true; }
-        return;
-    }
-    http.setTimeout(1200);
-    int code = http.GET();
-    if (code != 200) {
-        if (placarOnline) { placarOnline = false; dirtyHeader = true; }
-        http.end();
-        return;
-    }
-    String body = http.getString();
-    http.end();
-    int newA = placarA, newB = placarB;
-    extractIntField(body, "a", &newA);
-    extractIntField(body, "b", &newB);
-    bool wasOnline = placarOnline;
-    placarOnline = true;
-    if (!wasOnline) dirtyHeader = true;
-    if (!wasOnline || newA != placarA || newB != placarB) {
-        placarA = newA;
-        placarB = newB;
-        dirtyDigits = true;
-    }
-}
-
 static void pollCam(CamState& c) {
     HTTPClient http;
     String url = "http://" + String(c.ip) + "/status";
@@ -530,23 +578,20 @@ static void pollCam(CamState& c) {
     }
 }
 
-// Background worker on core 0. Interleaves queued action URLs (user taps)
-// with periodic polling. Single-threaded HTTP — no race on HTTPClient,
-// and the main loop on core 1 stays touch-responsive.
+// Background worker on core 0. Drains queued UI actions and polls the
+// cameras (placar polling is gone — we ARE the placar). Single-threaded
+// HTTP, no race on HTTPClient.
 static void workerTask(void*) {
-    uint32_t lastPlacar = 0, lastCamA = 0, lastCamB = 0;
+    uint32_t lastCamA = 0, lastCamB = 0;
     HttpCmd cmd;
     while (true) {
-        // 1. Drain any queued UI actions first so taps feel snappy.
         while (xQueueReceive(httpQueue, &cmd, 0) == pdTRUE) {
             httpExec(cmd.url);
         }
-        // 2. Periodic polls (only if WiFi up).
         if (WiFi.status() == WL_CONNECTED) {
             uint32_t now = millis();
-            if (now - lastPlacar >= PLACAR_POLL_MS) { pollPlacar(); lastPlacar = now; }
-            if (now - lastCamA >= CAM_POLL_MS)      { pollCam(camA); lastCamA = now; }
-            if (now - lastCamB >= CAM_POLL_MS)      { pollCam(camB); lastCamB = now; }
+            if (now - lastCamA >= CAM_POLL_MS) { pollCam(camA); lastCamA = now; }
+            if (now - lastCamB >= CAM_POLL_MS) { pollCam(camB); lastCamB = now; }
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
@@ -584,9 +629,10 @@ void setup() {
     Serial.println("[touch] inline GT911 polling driver ready");
 
     connectWiFi();
-    renderSplash("Aguardando placar...", COL_DIM);
-    Serial.printf("[hmi] placar=%s  camA=%s  camB=%s\n",
-                  SCOREBOARD_IP, CAM_A_IP, CAM_B_IP);
+    startWebServer();
+    renderSplash("Pronto", COL_GREEN);
+    Serial.printf("[hmi] HMI is the placar @ %s  camA=%s  camB=%s\n",
+                  WiFi.localIP().toString().c_str(), CAM_A_IP, CAM_B_IP);
 
     // First full draw so all four button rects exist before the first
     // touch event can land on them.
@@ -607,6 +653,10 @@ void loop() {
 
     // Touch first so button feedback feels instant.
     serviceTouch();
+
+    // Service HTTP — placar API runs on this thread (handlers update
+    // placarA/placarB + dirtyDigits, so no cross-thread renderer call).
+    server.handleClient();
 
     if (pendingAction != ACT_NONE) {
         ActionId a = pendingAction;
