@@ -78,10 +78,15 @@ Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
 // registers directly over Wire.
 namespace gt911 {
     constexpr uint8_t ADDR              = 0x5D;
-    constexpr uint16_t REG_STATUS       = 0x814E;  // bit7 = ready, low 4 = #points
+    constexpr uint16_t REG_COMMAND      = 0x8040;  // 0=normal, 2=soft reset
+    constexpr uint16_t REG_PROD_ID      = 0x8140;  // 4 ASCII chars
+    constexpr uint16_t REG_FW_VER       = 0x8144;  // 2 bytes LE
+    constexpr uint16_t REG_STATUS       = 0x814E;  // bit7=ready, low 4=#points
     constexpr uint16_t REG_POINT1       = 0x8150;  // 7 bytes per point
     static int  lastX = -1, lastY = -1;
     static bool touched = false;
+    static uint32_t pollCount = 0;
+    static uint32_t touchCount = 0;
 
     static bool writeReg(uint16_t reg, uint8_t v) {
         Wire.beginTransmission(ADDR);
@@ -101,19 +106,53 @@ namespace gt911 {
         return i == n;
     }
 
+    static void begin() {
+        uint8_t id[5] = {0};
+        if (readRegs(REG_PROD_ID, id, 4)) {
+            Serial.printf("[gt911] product_id = \"%c%c%c%c\"\n",
+                          id[0] ? id[0] : '?', id[1] ? id[1] : '?',
+                          id[2] ? id[2] : '?', id[3] ? id[3] : '?');
+        } else {
+            Serial.println("[gt911] FAILED to read product ID");
+        }
+        uint8_t fw[2] = {0};
+        if (readRegs(REG_FW_VER, fw, 2)) {
+            Serial.printf("[gt911] firmware = 0x%02X%02X\n", fw[1], fw[0]);
+        }
+
+        // Keep init minimal — just put the command register in normal
+        // scan mode and clear the status byte. The factory-restore
+        // command 0x05 isn't supported on every GT911 firmware revision
+        // and locked up the i2c bus on one revision tested.
+        writeReg(REG_COMMAND, 0x00);
+        delay(10);
+        writeReg(REG_STATUS, 0);
+        uint8_t cfgver = 0;
+        readRegs(0x8047, &cfgver, 1);
+        Serial.printf("[gt911] config version = 0x%02X (0xFF means no factory cfg loaded)\n", cfgver);
+        Serial.println("[gt911] init complete, polling enabled");
+    }
+
     static void poll() {
+        pollCount++;
         uint8_t s;
         if (!readRegs(REG_STATUS, &s, 1)) { touched = false; return; }
-        if (!(s & 0x80)) { touched = false; return; }  // not ready
+        // Diagnostic: print the raw status byte once every 500 polls so we
+        // can see what the chip is actually reporting without flooding the
+        // serial line. Strip this once the panel is reliably working.
+        if (pollCount % 500 == 0) {
+            Serial.printf("[gt911] status=0x%02X (poll #%u)\n", s, (unsigned)pollCount);
+        }
+        if (!(s & 0x80)) { touched = false; return; }
         int n = s & 0x0F;
         if (n == 0) { touched = false; writeReg(REG_STATUS, 0); return; }
         uint8_t pt[7];
         if (!readRegs(REG_POINT1, pt, 7)) { writeReg(REG_STATUS, 0); return; }
-        // 0,1 = x lo,hi   2,3 = y lo,hi   4,5 = size  6 = reserved
         lastX = pt[0] | (pt[1] << 8);
         lastY = pt[2] | (pt[3] << 8);
         touched = true;
-        writeReg(REG_STATUS, 0);  // ACK the data
+        touchCount++;
+        writeReg(REG_STATUS, 0);
     }
 }
 
@@ -511,12 +550,13 @@ static int hitTest(int x, int y) {
 }
 
 static void serviceTouch() {
-    // Debounce tuning. With 8 closely-spaced buttons on a capacitive
-    // panel, raw touches were firing on brushes / re-grabs of the
-    // chassis. These three thresholds together kill the false positives.
-    constexpr uint32_t MIN_PRESS_MS    = 60;   // hold this long before "pressed"
-    constexpr uint32_t POST_FIRE_MS    = 300;  // ignore touches after fire
-    constexpr int      SAME_BUTTON_HITS = 2;   // # consecutive polls on same idx
+    // Debounce — relaxed values after losing all touches with the first
+    // round. The cooldown is the most important; the stability check is
+    // turned off (a single hit is enough) because GT911 polls aren't
+    // always perfectly periodic on this build.
+    constexpr uint32_t MIN_PRESS_MS    = 30;
+    constexpr uint32_t POST_FIRE_MS    = 200;
+    constexpr int      SAME_BUTTON_HITS = 1;
 
     static uint32_t pressStartMs   = 0;
     static uint32_t lastFireMs     = 0;
@@ -702,7 +742,10 @@ void setup() {
             Serial.printf("[i2c]   device @ 0x%02X\n", addr);
         }
     }
-    Serial.println("[touch] inline GT911 polling driver ready");
+    // Give the GT911 a moment to be ready after power-up before we
+    // start hitting its I2C registers.
+    delay(50);
+    gt911::begin();
 
     connectWiFi();
     startWebServer();
@@ -725,6 +768,17 @@ void loop() {
         WiFi.reconnect();
         delay(500);
         return;
+    }
+
+    // Periodic heartbeat so we can tell from serial whether the touch
+    // poll is even running and how many real touches it's seeing.
+    static uint32_t lastHb = 0;
+    uint32_t hbNow = millis();
+    if (hbNow - lastHb >= 5000) {
+        Serial.printf("[hb] polls=%u touches=%u  placar=%dx%d\n",
+                      (unsigned)gt911::pollCount, (unsigned)gt911::touchCount,
+                      (int)placarA, (int)placarB);
+        lastHb = hbNow;
     }
 
     // Touch first so button feedback feels instant.
