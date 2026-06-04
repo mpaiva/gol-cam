@@ -87,6 +87,15 @@ namespace gt911 {
     static bool touched = false;
     static uint32_t pollCount = 0;
     static uint32_t touchCount = 0;
+    // Diagnostic state — exposed via /debug/touch so we can probe the chip
+    // from outside without a serial cable.
+    static uint8_t  lastStatus = 0;       // raw 0x814E byte from most recent poll
+    static uint8_t  bootCfgVer = 0;       // config version read at boot
+    static uint8_t  postCfgVer = 0;       // config version after blob write (or boot if no write)
+    static bool     wroteBlob = false;    // did we write the fallback config this boot?
+    static bool     wroteOk   = false;    // did the chip accept the blob (post-write ver = 0x42)?
+    static char     prodId[5] = {0,0,0,0,0};
+    static uint16_t fwVer = 0;
 
     static bool writeReg(uint16_t reg, uint8_t v) {
         Wire.beginTransmission(ADDR);
@@ -155,41 +164,71 @@ namespace gt911 {
             Serial.println("[gt911] config payload write FAILED — i2c bus issue?");
             return false;
         }
+        // Read back the first 8 bytes BEFORE committing. If these are
+        // 0x42,0x20,0x03,0xE0,0x01,... then the chip is accepting writes
+        // to the config-RAM region. If they're still 0xFF, the chip is
+        // silently rejecting writes (likely a config-lock / version-bump
+        // protection issue) and the commit can never succeed.
+        uint8_t rb[8] = {0};
+        readRegs(0x8047, rb, 8);
+        Serial.printf("[gt911] post-write pre-commit readback: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+                      rb[0], rb[1], rb[2], rb[3], rb[4], rb[5], rb[6], rb[7]);
+        // Goodix two-step commit:
+        //   0x8100 = 1 → load config from RAM into working registers
+        //   0x8101 = 1 → persist config to chip NVRAM (some units require
+        //                this for the version-bump check to clear)
         if (!writeReg(0x8100, 0x01)) {
             Serial.println("[gt911] config commit (0x8100<-1) FAILED");
             return false;
         }
-        delay(250);  // chip needs ~200 ms to apply + restart scanning
+        delay(50);
+        if (!writeReg(0x8101, 0x01)) {
+            Serial.println("[gt911] config persist (0x8101<-1) FAILED");
+            // not fatal — the chip may still scan from RAM
+        }
+        delay(500);  // generous — datasheet implies ~200ms but some units need more
         uint8_t cfgver = 0;
         readRegs(0x8047, &cfgver, 1);
-        Serial.printf("[gt911] post-write config version = 0x%02X (want 0x42)\n", cfgver);
-        return cfgver == 0x42;
+        Serial.printf("[gt911] post-commit config version = 0x%02X (want 0x42)\n", cfgver);
+        // Pre-commit readback proved bytes land; if cfgver reverted, the
+        // chip is rejecting the commit (likely version-bump check or
+        // panel-tuning self-test failure on factory-blank NVRAM).
+        postCfgVer = cfgver;
+        wroteOk = (cfgver == 0x42);
+        return wroteOk;
     }
 
     static void begin() {
         uint8_t id[5] = {0};
         if (readRegs(REG_PROD_ID, id, 4)) {
-            Serial.printf("[gt911] product_id = \"%c%c%c%c\"\n",
-                          id[0] ? id[0] : '?', id[1] ? id[1] : '?',
-                          id[2] ? id[2] : '?', id[3] ? id[3] : '?');
+            for (int i = 0; i < 4; i++) prodId[i] = id[i] ? id[i] : '?';
+            prodId[4] = 0;
+            Serial.printf("[gt911] product_id = \"%s\"\n", prodId);
         } else {
             Serial.println("[gt911] FAILED to read product ID");
         }
         uint8_t fw[2] = {0};
         if (readRegs(REG_FW_VER, fw, 2)) {
-            Serial.printf("[gt911] firmware = 0x%02X%02X\n", fw[1], fw[0]);
+            fwVer = ((uint16_t)fw[1] << 8) | fw[0];
+            Serial.printf("[gt911] firmware = 0x%04X\n", fwVer);
         }
 
         // Probe config version. 0xFF = no factory config loaded; the
-        // chip will refuse to scan until we write a valid blob. Some
-        // CrowPanel units ship with the GT911 NVRAM blank, so we fall
-        // back to a hardcoded 800x480 config in that case.
+        // chip will refuse to scan until we write a valid blob. ONLY
+        // overwrite when 0xFF — anything else (including older versions)
+        // means a factory-tuned config is present and we'd lose the
+        // panel-specific drive/sense calibration if we replaced it.
         uint8_t cfgver = 0;
         readRegs(0x8047, &cfgver, 1);
-        Serial.printf("[gt911] config version = 0x%02X\n", cfgver);
-        if (cfgver == 0xFF || cfgver < 0x42) {
+        bootCfgVer = cfgver;
+        postCfgVer = cfgver;
+        Serial.printf("[gt911] boot config version = 0x%02X\n", cfgver);
+        if (cfgver == 0xFF) {
             Serial.println("[gt911] no valid config — writing fallback blob");
+            wroteBlob = true;
             writeFactoryConfig();
+        } else {
+            Serial.println("[gt911] factory config present — leaving as-is");
         }
 
         // Always end in normal-scan mode with a cleared status byte so
@@ -204,7 +243,8 @@ namespace gt911 {
     static void poll() {
         pollCount++;
         uint8_t s;
-        if (!readRegs(REG_STATUS, &s, 1)) { touched = false; return; }
+        if (!readRegs(REG_STATUS, &s, 1)) { lastStatus = 0xEE; touched = false; return; }
+        lastStatus = s;
         // Diagnostic: print the raw status byte once every 500 polls so we
         // can see what the chip is actually reporting without flooding the
         // serial line. Strip this once the panel is reliably working.
@@ -400,16 +440,49 @@ static void handleAzero()  { placarA = 0; dirtyDigits = true; sendJson(200, stat
 static void handleBzero()  { placarB = 0; dirtyDigits = true; sendJson(200, statusJson()); }
 static void handleReset()  { handleApiReset(); }
 
+// Diagnostic: snapshot of what the GT911 has reported lately. Curl this
+// from a laptop to check whether the chip is scanning at all without
+// needing a serial cable: `curl -s http://192.168.40.89/debug/touch`.
+static void handleDebugTouch() {
+    char body[384];
+    snprintf(body, sizeof(body),
+        "{\"prod_id\":\"%s\",\"fw\":\"0x%04X\",\"boot_cfg_ver\":\"0x%02X\","
+        "\"post_cfg_ver\":\"0x%02X\",\"wrote_blob\":%s,\"wrote_ok\":%s,"
+        "\"poll_count\":%u,\"touch_count\":%u,\"last_status\":\"0x%02X\","
+        "\"last_x\":%d,\"last_y\":%d,\"touched_now\":%s}",
+        gt911::prodId, gt911::fwVer, gt911::bootCfgVer, gt911::postCfgVer,
+        gt911::wroteBlob ? "true" : "false",
+        gt911::wroteOk   ? "true" : "false",
+        (unsigned)gt911::pollCount, (unsigned)gt911::touchCount,
+        gt911::lastStatus, gt911::lastX, gt911::lastY,
+        gt911::touched ? "true" : "false");
+    sendJson(200, body);
+}
+
+// Force-rewrite of the fallback config blob even if a factory config
+// is currently loaded. Use to recover a chip whose config got corrupted
+// by an earlier experiment. `curl http://192.168.40.89/debug/gt911-rewrite`.
+static void handleDebugRewrite() {
+    bool ok = gt911::writeFactoryConfig();
+    char body[128];
+    snprintf(body, sizeof(body),
+        "{\"ok\":%s,\"post_cfg_ver\":\"0x%02X\"}",
+        ok ? "true" : "false", gt911::postCfgVer);
+    sendJson(ok ? 200 : 500, body);
+}
+
 static void startWebServer() {
-    server.on("/status",      HTTP_GET, handleStatus);
-    server.on("/goal",        HTTP_GET, handleGoal);
-    server.on("/goal-undo",   HTTP_GET, handleGoalUndo);
-    server.on("/api/reset",   HTTP_GET, handleApiReset);
-    server.on("/reset",       HTTP_GET, handleReset);
-    server.on("/a+",          HTTP_GET, handleAplus);
-    server.on("/b+",          HTTP_GET, handleBplus);
-    server.on("/az",          HTTP_GET, handleAzero);
-    server.on("/bz",          HTTP_GET, handleBzero);
+    server.on("/status",            HTTP_GET, handleStatus);
+    server.on("/goal",              HTTP_GET, handleGoal);
+    server.on("/goal-undo",         HTTP_GET, handleGoalUndo);
+    server.on("/api/reset",         HTTP_GET, handleApiReset);
+    server.on("/reset",             HTTP_GET, handleReset);
+    server.on("/a+",                HTTP_GET, handleAplus);
+    server.on("/b+",                HTTP_GET, handleBplus);
+    server.on("/az",                HTTP_GET, handleAzero);
+    server.on("/bz",                HTTP_GET, handleBzero);
+    server.on("/debug/touch",       HTTP_GET, handleDebugTouch);
+    server.on("/debug/gt911-rewrite", HTTP_GET, handleDebugRewrite);
     server.begin();
     Serial.println("[http] placar API started on port 80");
 }
