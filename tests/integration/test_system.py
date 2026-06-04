@@ -103,15 +103,48 @@ class Results:
 
 # ---------------------------------------------------------------------------
 # HTTP helpers — short timeouts so a hung board doesn't block the whole run.
+#
+# Per-host persistent HTTP/1.1 connections (keep-alive) instead of one fresh
+# TCP socket per call. The ESP32's LWIP has only ~10 sockets total and each
+# closed socket holds TIME_WAIT for 60 s, so the previous fresh-socket-per-
+# request pattern exhausted the pool during cross-board burst polling
+# (~130 sockets in 30 s). One persistent connection per host means a single
+# socket carries the whole test run. Matches what a real browser dashboard
+# does (keep-alive polling).
 # ---------------------------------------------------------------------------
+import http.client
+from urllib.parse import urlsplit
+
+_conn_cache = {}  # host -> http.client.HTTPConnection
+
+def _get_conn(host_port):
+    c = _conn_cache.get(host_port)
+    if c is None:
+        host, _, port = host_port.partition(":")
+        c = http.client.HTTPConnection(host, int(port) if port else 80, timeout=4)
+        _conn_cache[host_port] = c
+    return c
+
 def http_get(url, timeout=4):
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return r.status, r.read().decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode("utf-8", errors="replace") if e.fp else ""
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
-        return 0, str(e)
+    parts = urlsplit(url)
+    host_port = parts.netloc
+    path = parts.path + (f"?{parts.query}" if parts.query else "")
+    # Two attempts so a stale keep-alive socket can be retried fresh.
+    for attempt in range(2):
+        try:
+            conn = _get_conn(host_port)
+            conn.timeout = timeout
+            conn.request("GET", path)
+            r = conn.getresponse()
+            body = r.read().decode("utf-8", errors="replace")
+            return r.status, body
+        except (OSError, http.client.HTTPException, TimeoutError) as e:
+            # Drop the dead connection and let the next iteration rebuild it.
+            try: conn.close()
+            except Exception: pass
+            _conn_cache.pop(host_port, None)
+            if attempt == 1:
+                return 0, str(e)
 
 
 def http_get_json(url, timeout=4):
