@@ -702,87 +702,49 @@ static int hitTest(int x, int y) {
 }
 
 static void serviceTouch() {
-    // Debounce — relaxed values after losing all touches with the first
-    // round. The cooldown is the most important; the stability check is
-    // turned off (a single hit is enough) because GT911 polls aren't
-    // always perfectly periodic on this build.
-    constexpr uint32_t MIN_PRESS_MS    = 30;
-    constexpr uint32_t POST_FIRE_MS    = 200;
-    constexpr int      SAME_BUTTON_HITS = 1;
+    // Fire-on-press model. The GT911 on this CrowPanel reports touches
+    // as one-shot status-bit blips rather than a sustained "data ready"
+    // window, so a release-based fire-on-up scheme silently drops every
+    // tap (held < MIN_PRESS_MS). Instead: any poll that lands on a
+    // button triggers the action immediately, then a POST_FIRE_MS
+    // cooldown prevents the same tap from re-firing from a subsequent
+    // status blip mid-press. Cooldown also caps rapid taps at ~4 Hz,
+    // which is comfortably faster than a referee actually wants.
+    constexpr uint32_t POST_FIRE_MS = 250;
 
-    static uint32_t pressStartMs   = 0;
-    static uint32_t lastFireMs     = 0;
-    static int      candidateIdx   = -1;
-    static int      candidateHits  = 0;
+    static uint32_t lastFireMs   = 0;
+    static int      lastFiredBtn = -1;
 
     uint32_t now = millis();
-    if (now - lastFireMs < POST_FIRE_MS) {
-        // Cooldown — drain touch state without acting on it so we
-        // start the next gesture from a clean baseline.
-        gt911::poll();
-        if (!gt911::touched) {
-            pressedButton = -1;
-            candidateIdx = -1;
-            candidateHits = 0;
-        }
-        return;
-    }
-
     gt911::poll();
     bool isPressed = gt911::touched;
-    if (isPressed) {
-        int tx = gt911::lastX;
-        int ty = gt911::lastY;
-        int idx = hitTest(tx, ty);
+    int btn = isPressed ? hitTest(gt911::lastX, gt911::lastY) : -1;
 
-        // Stability — finger must land on the SAME button for two
-        // consecutive polls before we lock it in. Sliding across the
-        // screen doesn't accidentally pick up whichever button you're
-        // passing over.
-        if (idx == candidateIdx) {
-            candidateHits++;
-        } else {
-            candidateIdx = idx;
-            candidateHits = 1;
-        }
+    // Visual feedback: redraw whichever button just changed pressed-state.
+    if (btn != pressedButton) {
+        int prev = pressedButton;
+        pressedButton = btn;
+        if (prev >= 0) drawButton(prev);
+        if (btn  >= 0) drawButton(btn);
+    }
 
-        if (candidateHits >= SAME_BUTTON_HITS && candidateIdx != pressedButton) {
-            int prev = pressedButton;
-            pressedButton = candidateIdx;
-            pressStartMs = now;
-            static uint32_t lastTouchLog = 0;
-            if (now - lastTouchLog > 250) {
-                Serial.printf("[touch] press (%d,%d) → btn=%d\n",
-                              tx, ty, pressedButton);
-                lastTouchLog = now;
-            }
-            if (prev >= 0)            drawButton(prev);
-            if (pressedButton >= 0)   drawButton(pressedButton);
-        }
-    } else if (pressedButton >= 0) {
-        // Released — only fire if the press lasted long enough to
-        // count as deliberate. Short brushes are dropped silently.
-        int idx = pressedButton;
-        uint32_t held = now - pressStartMs;
-        pressedButton = -1;
-        candidateIdx = -1;
-        candidateHits = 0;
-        drawButton(idx);
-        if (held >= MIN_PRESS_MS) {
-            pendingAction = buttons[idx].action;
-            lastFireMs = now;
-            Serial.printf("[touch] release btn=%d \"%s\" held=%ums → action=%d\n",
-                          idx, buttons[idx].label, (unsigned)held,
-                          (int)pendingAction);
-        } else {
-            Serial.printf("[touch] short tap on btn=%d (held=%ums, dropped)\n",
-                          idx, (unsigned)held);
-        }
-    } else {
-        // No touch + no pressed button: reset the candidate so a fresh
-        // gesture starts from zero.
-        candidateIdx = -1;
-        candidateHits = 0;
+    bool inCooldown = (now - lastFireMs < POST_FIRE_MS);
+
+    // Fire once when a touch lands on a button. Won't re-fire if the
+    // chip blips the touch off-then-on during the cooldown.
+    if (!inCooldown && btn >= 0 && btn != lastFiredBtn) {
+        pendingAction = buttons[btn].action;
+        lastFireMs    = now;
+        lastFiredBtn  = btn;
+        Serial.printf("[touch] FIRE btn=%d \"%s\" at (%d,%d)\n",
+                      btn, buttons[btn].label,
+                      gt911::lastX, gt911::lastY);
+    }
+
+    // After cooldown AND finger truly off, clear the "last fired" lock
+    // so a fresh tap on the same button (e.g. A+ A+ A+) fires again.
+    if (!isPressed && now - lastFireMs > POST_FIRE_MS) {
+        lastFiredBtn = -1;
     }
 }
 
