@@ -150,3 +150,4 @@ The camera reports its `"side"` in `/status`, resolved at boot from `SCOREBOARD_
 - `.plans/` — Implementation plans (including `consolidation-plan.md`) and session notes
 - `.reports/` — Research findings, UX audit, screenshots
 - `hardware/` — 3D-printable parts catalog (see `hardware/README.md`)
+- `tests/integration/test_system.py` — stdlib-only smoke suite that exercises the live REST contracts (placar + both cameras + cross-board VAR-annul-sync). Run `python3 tests/integration/test_system.py` to get a green/red report; targets the standard `.89/.90/.91` IPs and skips suites whose boards are offline.
