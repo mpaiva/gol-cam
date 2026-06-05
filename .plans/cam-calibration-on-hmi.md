@@ -272,3 +272,21 @@ retry hint) → clean placar repaint on dismiss. All 70 integration
 tests still pass.
 
 See `.plans/session-2026-06-04.md` for the full session log.
+
+### Option C: cam-snapshot preview — SHIPPED 2026-06-04 (later in day)
+
+Commit `ae41369` adds a 320×240 cam-frame preview inside the
+overlay, fed by the cam's `/cal-snapshot` JPEG and decoded with
+TJpg_Decoder into a PSRAM buffer. Operator can now see exactly
+what the cam saw at the moment of calibration — makes "FAILED:
+No edges found" results immediately diagnosable from the HMI
+alone.
+
+What this Option C did NOT cover:
+- LIVE preview before tapping CAL (to position the dadinho).
+  The static snapshot only refreshes on CAL trigger; for live
+  positioning the operator still needs to open the cam's web
+  dashboard on a phone OR use the follow-up live-stream plan.
+- This gap is addressed by `.plans/live-stream-preview.md`
+  (commit `1416e1f`) which scopes a hybrid MJPEG-live + native-
+  button approach as a follow-up.
