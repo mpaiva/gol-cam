@@ -353,8 +353,8 @@ struct CalOverlay {
 static volatile CalOverlay calOverlay = { -1, 0, 0, -1, 0, {0} };
 
 // "Cancelar" button on the overlay — only hit-tested while overlay is up.
-// Lives centred near the bottom of the overlay rect.
-constexpr int CANCEL_X = 280, CANCEL_Y = 340, CANCEL_W = 240, CANCEL_H = 60;
+// Lives centred near the bottom of the (now full-screen) overlay.
+constexpr int CANCEL_X = 290, CANCEL_Y = 390, CANCEL_W = 220, CANCEL_H = 70;
 
 // =============================================================
 // Buttons. Hit-tested against raw touch coords; the action callback
@@ -720,7 +720,8 @@ static void runAction(ActionId a) {
             calOverlay.phase         = 0;
             calOverlay.side          = -1;
             calOverlay.resultUntilMs = 0;
-            // Repaint everything the overlay covered.
+            // Repaint everything the (full-screen) overlay covered.
+            dirtyHeader  = true;
             dirtyDigits  = true;
             dirtyButtons = true;
             dirtyStatus  = true;
@@ -868,13 +869,13 @@ static void renderFull() {
 }
 
 // =============================================================
-// Calibration overlay rendering. White panel with blue text. Covers
-// y=60 → y=400 of the panel — overlap into the bottom edge of the
-// header (y=0-60) and the buttons (y=230-390) ensures no residual
-// pixels from the underlying score+buttons can bleed through. The
-// HOME/AWAY status pills at y=405+ stay visible underneath.
+// Calibration overlay rendering. Full-screen white panel — covers
+// the entire 800×480 display while a camera is being calibrated.
+// Header, score, buttons and side-status pills all disappear under
+// the overlay; everything visible during cal belongs to the overlay
+// itself. Selective redraw on dismiss brings the placar view back.
 // =============================================================
-constexpr int OVL_X = 10, OVL_Y = 65, OVL_W = 780, OVL_H = 335;
+constexpr int OVL_X = 0, OVL_Y = 0, OVL_W = 800, OVL_H = 480;
 constexpr uint16_t OVL_BG     = 0xFFFF;   // white
 constexpr uint16_t OVL_BLUE   = 0x0011;   // strong dark blue
 constexpr uint16_t OVL_BLUE2  = 0x4A1F;   // lighter accent blue
@@ -891,14 +892,10 @@ static void drawCalOverlay() {
     const CamState& c = (ov.side == 0) ? camA : camB;
     const char* sideLabel = (ov.side == 0) ? "Lado A (HOME)" : "Lado B (AWAY)";
 
-    // Solid white panel — fillRect (not rounded) so corners don't
-    // expose the underlying score view through transparent radii.
-    gfx->fillRect(OVL_X, OVL_Y, OVL_W, OVL_H, OVL_BG);
-    // Double blue border for visibility.
-    gfx->drawRect(OVL_X,     OVL_Y,     OVL_W,     OVL_H,     OVL_BLUE);
-    gfx->drawRect(OVL_X + 1, OVL_Y + 1, OVL_W - 2, OVL_H - 2, OVL_BLUE);
+    // Solid white fullscreen panel.
+    gfx->fillRect(0, 0, 800, 480, OVL_BG);
 
-    // Title row.
+    // Title row, big and centered near the top.
     char title[64];
     if (ov.phase == 1) {
         snprintf(title, sizeof(title), "Calibrado %s", sideLabel);
@@ -907,42 +904,36 @@ static void drawCalOverlay() {
     } else {
         snprintf(title, sizeof(title), "Calibrando %s", sideLabel);
     }
-    // Keep success/fail title colour-coded; default and RUNNING use
-    // the strong blue. All three render legibly on the white panel.
     uint16_t titleCol = (ov.phase == 1) ? COL_GREEN
                        : (ov.phase == 2) ? COL_RED
                        : OVL_BLUE;
-    gfx->setTextSize(3);
+    gfx->setTextSize(4);                        // bigger title for fullscreen
     gfx->setTextColor(titleCol, OVL_BG);
-    int tw = (int)strlen(title) * 18;
-    gfx->setCursor(OVL_X + (OVL_W - tw) / 2, OVL_Y + 22);
+    int tw = (int)strlen(title) * 24;
+    gfx->setCursor((800 - tw) / 2, 70);
     gfx->print(title);
 
     if (ov.phase == 0) {
         // RUNNING phase: instructions + live calMsg + progress bar.
         const char* sub = "Coloque o dadinho dentro do gol";
-        int sw = (int)strlen(sub) * 12;
         gfx->setTextSize(2);
         gfx->setTextColor(OVL_BLUE, OVL_BG);
-        gfx->setCursor(OVL_X + (OVL_W - sw) / 2, OVL_Y + 80);
+        int sw = (int)strlen(sub) * 12;
+        gfx->setCursor((800 - sw) / 2, 170);
         gfx->print(sub);
 
-        // calMsg from the camera. Truncated visually if it wouldn't
-        // fit within the overlay's inner width.
         char msg[64];
         snprintf(msg, sizeof(msg), "%s", c.calMsg[0] ? c.calMsg : "(aguardando…)");
-        int mw = (int)strlen(msg) * 12;
-        if (mw > OVL_W - 40) mw = OVL_W - 40;
         gfx->setTextColor(OVL_BLUE2, OVL_BG);
-        gfx->setCursor(OVL_X + (OVL_W - mw) / 2, OVL_Y + 130);
+        int mw = (int)strlen(msg) * 12;
+        if (mw > 760) mw = 760;
+        gfx->setCursor((800 - mw) / 2, 230);
         gfx->print(msg);
 
-        // Progress bar: coarse 3-stop track driven by hasCalSnap and
-        // the cam's reported calContrast. Just a visual cue — the cam
-        // doesn't expose a 0..100 percentage.
-        int barX = OVL_X + 60, barY = OVL_Y + 180;
-        int barW = OVL_W - 120, barH = 22;
+        // Progress bar: coarse 3-stop track.
+        int barX = 100, barY = 300, barW = 600, barH = 28;
         gfx->drawRect(barX, barY, barW, barH, OVL_BLUE);
+        gfx->drawRect(barX + 1, barY + 1, barW - 2, barH - 2, OVL_BLUE);
         int fill = 0;
         if (c.state == 1) fill = 25;
         if (c.hasCalSnap) fill = 60;
@@ -952,7 +943,7 @@ static void drawCalOverlay() {
             gfx->fillRect(barX + 2, barY + 2, fw, barH - 4, OVL_BLUE2);
         }
     } else {
-        // RESULT phase: show the learned thresholds (OK) or a hint (FAIL).
+        // RESULT phase: thresholds (OK) or retry hint (FAIL).
         char line1[64], line2[64];
         if (ov.phase == 1) {
             snprintf(line1, sizeof(line1), "Limiares aprendidos:");
@@ -962,21 +953,22 @@ static void drawCalOverlay() {
             snprintf(line1, sizeof(line1), "Sem dadinho detectado");
             snprintf(line2, sizeof(line2), "Posicione e toque CAL novamente");
         }
-        gfx->setTextSize(2);
+        gfx->setTextSize(3);
         gfx->setTextColor(OVL_BLUE, OVL_BG);
-        int l1w = (int)strlen(line1) * 12;
-        gfx->setCursor(OVL_X + (OVL_W - l1w) / 2, OVL_Y + 110);
+        int l1w = (int)strlen(line1) * 18;
+        gfx->setCursor((800 - l1w) / 2, 200);
         gfx->print(line1);
+        gfx->setTextSize(2);
         int l2w = (int)strlen(line2) * 12;
-        gfx->setCursor(OVL_X + (OVL_W - l2w) / 2, OVL_Y + 160);
+        gfx->setCursor((800 - l2w) / 2, 270);
         gfx->print(line2);
     }
 
-    // Cancelar button — only shown in RUNNING phase. Red bg + white
-    // text contrasts well against the white panel.
+    // Cancelar — only in RUNNING phase. Red bg + white text.
     if (ov.phase == 0) {
         gfx->fillRect(CANCEL_X, CANCEL_Y, CANCEL_W, CANCEL_H, COL_RED);
         gfx->drawRect(CANCEL_X, CANCEL_Y, CANCEL_W, CANCEL_H, OVL_BLUE);
+        gfx->drawRect(CANCEL_X+1, CANCEL_Y+1, CANCEL_W-2, CANCEL_H-2, OVL_BLUE);
         gfx->setTextSize(3);
         gfx->setTextColor(COL_WHITE, COL_RED);
         const char* cancelLabel = "Cancelar";
@@ -1040,7 +1032,8 @@ static void updateCalOverlay() {
             calOverlay.side          = -1;
             calOverlay.phase         = 0;
             calOverlay.resultUntilMs = 0;
-            // Repaint everything the overlay was covering.
+            // Repaint everything the (full-screen) overlay was covering.
+            dirtyHeader  = true;
             dirtyDigits  = true;
             dirtyButtons = true;
             dirtyStatus  = true;
@@ -1108,11 +1101,17 @@ static void serviceTouch() {
     int btn = isPressed ? hitTest(gt911::lastX, gt911::lastY) : -1;
 
     // Visual feedback: redraw whichever button just changed pressed-state.
+    // Skip the redraw when the overlay is up — the placar buttons live
+    // underneath it, and redrawing one here punches a coloured rect
+    // through the white overlay (the bug that surfaced as "green START
+    // visible inside the white calibration panel").
     if (btn != pressedButton) {
         int prev = pressedButton;
         pressedButton = btn;
-        if (prev >= 0) drawButton(prev);
-        if (btn  >= 0) drawButton(btn);
+        if (!overlayActive()) {
+            if (prev >= 0) drawButton(prev);
+            if (btn  >= 0) drawButton(btn);
+        }
     }
 
     bool inCooldown = (now - lastFireMs < POST_FIRE_MS);
@@ -1342,14 +1341,24 @@ void loop() {
     // Re-render whatever the polling task on core 0 marked dirty. Order
     // matters so overlapping rects redraw correctly (header before
     // digits before buttons before status, overlay on top of everything).
-    // While the overlay is up, the score/button/status redraws below are
-    // wasted pixels — but they're also covered by the overlay rect on
-    // the same frame, so the user only ever sees the overlay layer.
-    if (dirtyHeader)  { dirtyHeader  = false; drawHeader(); }
-    if (dirtyDigits)  { dirtyDigits  = false; drawScoreDigits(); }
+    //
+    // While the overlay is up we SKIP the score and START-button
+    // redraws — those rects live underneath the overlay panel, so
+    // re-rendering them would punch through the white overlay and
+    // leave a START/digit ghost on top of Cancelar. The dirty flags
+    // stay set; they'll be processed on the first frame after the
+    // overlay dismisses (which also clears them via dirtyDigits etc).
+    // All underlay redraws are gated by overlayActive() — the overlay
+    // now spans the full 800x480, so the header/score/buttons/status
+    // would all bleed through it. Dirty flags stay set; first frame
+    // after dismiss processes them naturally (the dismiss path in
+    // updateCalOverlay() also sets dirtyDigits + dirtyButtons +
+    // dirtyStatus to force a fresh placar repaint).
+    if (!overlayActive() && dirtyHeader)  { dirtyHeader  = false; drawHeader(); }
+    if (!overlayActive() && dirtyDigits)  { dirtyDigits  = false; drawScoreDigits(); }
     // START is the 6th button (index 5) after the 4 score-adjust buttons.
-    if (dirtyButtons) { dirtyButtons = false; drawButton(5); }
-    if (dirtyStatus)  { dirtyStatus  = false; drawSideStatus(); }
+    if (!overlayActive() && dirtyButtons) { dirtyButtons = false; drawButton(5); }
+    if (!overlayActive() && dirtyStatus)  { dirtyStatus  = false; drawSideStatus(); }
 
     // Overlay paints last so it sits on top of the placar layer. It
     // re-renders whenever pollCam() flags new calMsg / state / progress
