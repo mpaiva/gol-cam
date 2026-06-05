@@ -21,6 +21,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include "esp_http_server.h"
+#include <TJpg_Decoder.h>
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
 
@@ -354,7 +355,30 @@ static volatile CalOverlay calOverlay = { -1, 0, 0, -1, 0, {0} };
 
 // "Cancelar" button on the overlay — only hit-tested while overlay is up.
 // Lives centred near the bottom of the (now full-screen) overlay.
-constexpr int CANCEL_X = 290, CANCEL_Y = 390, CANCEL_W = 220, CANCEL_H = 70;
+constexpr int CANCEL_X = 290, CANCEL_Y = 400, CANCEL_W = 220, CANCEL_H = 65;
+
+// Camera-snapshot preview area inside the overlay. The camera serves
+// 320×240 QVGA JPEGs at /cal-snapshot, so we render at native size
+// centred horizontally near the top of the panel.
+constexpr int SNAP_X = 240, SNAP_Y = 60, SNAP_W = 320, SNAP_H = 240;
+
+// PSRAM-backed buffer that holds the most recently fetched cal-snapshot
+// JPEG. 32 KB is generous — observed samples are ~2 KB but the cam can
+// emit more under varying scenes. The buffer is owned by the worker
+// task (core 0) while a fetch is in progress, then handed off to the
+// main loop (core 1) for decode + render via the calSnapReady flag.
+constexpr size_t CAL_SNAP_JPEG_MAX = 32 * 1024;
+static uint8_t*  calSnapJpegBuf    = nullptr;
+static volatile size_t   calSnapJpegLen = 0;
+static volatile bool     calSnapReady   = false;  // buffer holds a valid JPEG
+static volatile bool     snapFetchReq   = false;  // worker should fetch now
+static volatile uint32_t snapVersion    = 0;      // bumps on every fetch success;
+                                                  // drawCalOverlay uses it to
+                                                  // gate snapshot-area repaints
+                                                  // and avoid flicker
+static char snapFetchUrl[160] = {0};               // owned by main loop while
+                                                   // !snapFetchReq, by worker
+                                                   // when snapFetchReq==true
 
 // =============================================================
 // Buttons. Hit-tested against raw touch coords; the action callback
@@ -416,6 +440,7 @@ constexpr uint16_t COL_BLACK = 0x0000;
 // path calls back into the renderer).
 static void drawScoreDigits();
 static void renderFull();
+static void requestCalSnapshot(const char* ip);
 static void drawHeader();
 static void drawSideStatus();
 static void drawButton(int idx);
@@ -679,6 +704,73 @@ static void httpExec(const char* url) {
     }
 }
 
+// Worker-thread snapshot fetch. Pulls the JPEG body into calSnapJpegBuf
+// and flips calSnapReady=true on success. Buffer ownership protocol:
+//   - calSnapReady = false → buffer is undefined (worker may be writing)
+//   - calSnapReady = true  → buffer holds calSnapJpegLen bytes of JPEG
+// Main loop only decodes when calSnapReady is true; worker only writes
+// when calSnapReady is false. Caller sets ready=false before signalling
+// snapFetchReq=true to grant the worker write access.
+static void fetchCalSnapshot(const char* url) {
+    if (!calSnapJpegBuf) return;
+    HTTPClient http;
+    if (!http.begin(url)) {
+        Serial.printf("[snap] %s begin failed\n", url);
+        return;
+    }
+    http.setTimeout(2500);
+    int code = http.GET();
+    if (code != 200) {
+        Serial.printf("[snap] %s → %d (skip)\n", url, code);
+        http.end();
+        return;
+    }
+    int len = http.getSize();
+    if (len <= 0 || (size_t)len > CAL_SNAP_JPEG_MAX) {
+        Serial.printf("[snap] %s len=%d (skip, out of range)\n", url, len);
+        http.end();
+        return;
+    }
+    WiFiClient* stream = http.getStreamPtr();
+    size_t off = 0;
+    uint32_t deadline = millis() + 2500;
+    while (off < (size_t)len && millis() < deadline) {
+        size_t avail = stream->available();
+        if (avail > 0) {
+            size_t want = (size_t)len - off;
+            if (avail > want) avail = want;
+            size_t got = stream->readBytes(calSnapJpegBuf + off, avail);
+            off += got;
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+    }
+    http.end();
+    if (off == (size_t)len) {
+        calSnapJpegLen = (size_t)len;
+        snapVersion++;            // signal drawCalOverlay to repaint snap area
+        calSnapReady   = true;
+        dirtyOverlay   = true;
+        Serial.printf("[snap] %s → %d bytes OK (v=%u)\n",
+                      url, len, (unsigned)snapVersion);
+    } else {
+        Serial.printf("[snap] %s truncated (%u/%d)\n", url, (unsigned)off, len);
+    }
+}
+
+// TJpg_Decoder push-back callback. The (x, y) passed in are absolute
+// screen coordinates — TJpgDec offsets them internally by the (X, Y)
+// passed to drawJpg(X, Y, ...), so we pass straight through to gfx.
+// Returns true to keep decoding; false to abort.
+static bool calSnapTjpgOutput(int16_t x, int16_t y, uint16_t w, uint16_t h,
+                              uint16_t* bitmap) {
+    if (y >= SNAP_Y + SNAP_H) return false;
+    int16_t blitH = h;
+    if (y + h > SNAP_Y + SNAP_H) blitH = SNAP_Y + SNAP_H - y;
+    gfx->draw16bitRGBBitmap(x, y, bitmap, w, blitH);
+    return true;
+}
+
 static void runAction(ActionId a) {
     Serial.printf("[action] dispatch %d\n", (int)a);
     switch (a) {
@@ -699,6 +791,12 @@ static void runAction(ActionId a) {
             for (size_t k = 0; k < sizeof(calOverlay.msgAtRaise); k++)
                 calOverlay.msgAtRaise[k] = camA.calMsg[k];
             dirtyOverlay             = true;
+            // Immediately request the previous attempt's cal-snapshot so
+            // the user has something to look at while this attempt runs.
+            // A second fetch fires when the cam finishes (state-machine
+            // result path), so the preview ends up matching the new
+            // attempt's frame within ~1.5 s of the tap.
+            requestCalSnapshot(camA.ip);
             break;
         case ACT_CAL_B:
             httpKick(String("http://") + camB.ip + "/calibrate");
@@ -710,6 +808,7 @@ static void runAction(ActionId a) {
             for (size_t k = 0; k < sizeof(calOverlay.msgAtRaise); k++)
                 calOverlay.msgAtRaise[k] = camB.calMsg[k];
             dirtyOverlay             = true;
+            requestCalSnapshot(camB.ip);
             break;
         case ACT_CAL_CANCEL: {
             // Send /reset to the cam so it leaves CALIBRATING immediately,
@@ -894,10 +993,26 @@ static void drawCalOverlay() {
     const CamState& c = (ov.side == 0) ? camA : camB;
     const char* sideLabel = (ov.side == 0) ? "Lado A (HOME)" : "Lado B (AWAY)";
 
-    // Solid white fullscreen panel.
-    gfx->fillRect(0, 0, 800, 480, OVL_BG);
+    // White overlay background, filled in four strips AROUND the snap
+    // area (top, bottom, left, right) instead of one fullscreen fillRect.
+    // A fullscreen fill would clobber the decoded JPEG between fetches,
+    // and the version-gated re-decode below would then refuse to repaint
+    // (since the JPEG hasn't changed), leaving the snap area white. By
+    // not touching the snap rectangle here, a stale-but-correct cam
+    // frame stays visible across non-content-change repaints.
+    {
+        constexpr int snapL = SNAP_X - 2;
+        constexpr int snapR = SNAP_X + SNAP_W + 2;
+        constexpr int snapT = SNAP_Y - 2;
+        constexpr int snapB = SNAP_Y + SNAP_H + 2;
+        gfx->fillRect(0, 0, 800, snapT, OVL_BG);
+        gfx->fillRect(0, snapB, 800, 480 - snapB, OVL_BG);
+        gfx->fillRect(0, snapT, snapL, snapB - snapT, OVL_BG);
+        gfx->fillRect(snapR, snapT, 800 - snapR, snapB - snapT, OVL_BG);
+    }
 
-    // Title row, big and centered near the top.
+    // Title row at the top — text size 3 to leave room for the
+    // 320×240 snapshot preview below it.
     char title[64];
     if (ov.phase == 1) {
         snprintf(title, sizeof(title), "Calibrado %s", sideLabel);
@@ -909,31 +1024,61 @@ static void drawCalOverlay() {
     uint16_t titleCol = (ov.phase == 1) ? COL_GREEN
                        : (ov.phase == 2) ? COL_RED
                        : OVL_BLUE;
-    gfx->setTextSize(4);                        // bigger title for fullscreen
+    gfx->setTextSize(3);
     gfx->setTextColor(titleCol, OVL_BG);
-    int tw = (int)strlen(title) * 24;
-    gfx->setCursor((800 - tw) / 2, 70);
+    int tw = (int)strlen(title) * 18;
+    gfx->setCursor((800 - tw) / 2, 20);
     gfx->print(title);
 
-    if (ov.phase == 0) {
-        // RUNNING phase: instructions + live calMsg + progress bar.
-        const char* sub = "Coloque o dadinho dentro do gol";
-        gfx->setTextSize(2);
-        gfx->setTextColor(OVL_BLUE, OVL_BG);
-        int sw = (int)strlen(sub) * 12;
-        gfx->setCursor((800 - sw) / 2, 170);
-        gfx->print(sub);
+    // Snapshot border (always painted — cheap, gives the user a
+    // visible frame whether or not the JPEG has loaded).
+    gfx->drawRect(SNAP_X - 2, SNAP_Y - 2, SNAP_W + 4, SNAP_H + 4, OVL_BLUE);
+    gfx->drawRect(SNAP_X - 1, SNAP_Y - 1, SNAP_W + 2, SNAP_H + 2, OVL_BLUE);
 
+    // Snapshot CONTENT only repaints when (a) the overlay just got
+    // raised (fresh session), or (b) a new JPEG version arrived from
+    // the worker. Without this gate, drawCalOverlay's normal repaint
+    // cadence (dirtyOverlay fires every poll / state transition) would
+    // re-fillRect + re-decode the same JPEG many times per second,
+    // producing visible flicker.
+    static uint32_t lastPaintedSnapVer = 0;
+    static int8_t   lastPaintedSide    = -1;
+    uint32_t curSnapVer = snapVersion;
+    bool freshSession = (lastPaintedSide < 0 && ov.side >= 0);
+    bool versionBump  = (curSnapVer != lastPaintedSnapVer);
+    if (freshSession || versionBump) {
+        if (calSnapReady && calSnapJpegLen > 0) {
+            gfx->fillRect(SNAP_X, SNAP_Y, SNAP_W, SNAP_H, 0x8410);
+            TJpgDec.drawJpg(SNAP_X, SNAP_Y,
+                            calSnapJpegBuf, (uint32_t)calSnapJpegLen);
+        } else {
+            gfx->fillRect(SNAP_X, SNAP_Y, SNAP_W, SNAP_H, 0xC618);
+            const char* loading = "(carregando…)";
+            gfx->setTextSize(2);
+            gfx->setTextColor(OVL_BLUE, 0xC618);
+            int lw = (int)strlen(loading) * 12;
+            gfx->setCursor(SNAP_X + (SNAP_W - lw) / 2,
+                           SNAP_Y + SNAP_H / 2 - 8);
+            gfx->print(loading);
+        }
+        lastPaintedSnapVer = curSnapVer;
+    }
+    lastPaintedSide = ov.side;
+
+    if (ov.phase == 0) {
+        // RUNNING phase: live calMsg + progress bar below the preview.
         char msg[64];
-        snprintf(msg, sizeof(msg), "%s", c.calMsg[0] ? c.calMsg : "(aguardando…)");
+        snprintf(msg, sizeof(msg), "%s",
+                 c.calMsg[0] ? c.calMsg : "Coloque o dadinho dentro do gol");
+        gfx->setTextSize(2);
         gfx->setTextColor(OVL_BLUE2, OVL_BG);
         int mw = (int)strlen(msg) * 12;
-        if (mw > 760) mw = 760;
-        gfx->setCursor((800 - mw) / 2, 230);
+        if (mw > 780) mw = 780;
+        gfx->setCursor((800 - mw) / 2, 320);
         gfx->print(msg);
 
-        // Progress bar: coarse 3-stop track.
-        int barX = 100, barY = 300, barW = 600, barH = 28;
+        // Progress bar.
+        int barX = 150, barY = 360, barW = 500, barH = 22;
         gfx->drawRect(barX, barY, barW, barH, OVL_BLUE);
         gfx->drawRect(barX + 1, barY + 1, barW - 2, barH - 2, OVL_BLUE);
         int fill = 0;
@@ -945,7 +1090,9 @@ static void drawCalOverlay() {
             gfx->fillRect(barX + 2, barY + 2, fw, barH - 4, OVL_BLUE2);
         }
     } else {
-        // RESULT phase: thresholds (OK) or retry hint (FAIL).
+        // RESULT phase: thresholds (OK) or retry hint (FAIL), still
+        // below the snapshot. The snapshot frame the cam captured is
+        // the most useful diagnostic — text plays a supporting role.
         char line1[64], line2[64];
         if (ov.phase == 1) {
             snprintf(line1, sizeof(line1), "Limiares aprendidos:");
@@ -955,18 +1102,17 @@ static void drawCalOverlay() {
             snprintf(line1, sizeof(line1), "Sem dadinho detectado");
             snprintf(line2, sizeof(line2), "Posicione e toque CAL novamente");
         }
-        gfx->setTextSize(3);
-        gfx->setTextColor(OVL_BLUE, OVL_BG);
-        int l1w = (int)strlen(line1) * 18;
-        gfx->setCursor((800 - l1w) / 2, 200);
-        gfx->print(line1);
         gfx->setTextSize(2);
+        gfx->setTextColor(OVL_BLUE, OVL_BG);
+        int l1w = (int)strlen(line1) * 12;
+        gfx->setCursor((800 - l1w) / 2, 320);
+        gfx->print(line1);
         int l2w = (int)strlen(line2) * 12;
-        gfx->setCursor((800 - l2w) / 2, 270);
+        gfx->setCursor((800 - l2w) / 2, 360);
         gfx->print(line2);
     }
 
-    // Cancelar — only in RUNNING phase. Red bg + white text.
+    // Cancelar — only in RUNNING phase.
     if (ov.phase == 0) {
         gfx->fillRect(CANCEL_X, CANCEL_Y, CANCEL_W, CANCEL_H, COL_RED);
         gfx->drawRect(CANCEL_X, CANCEL_Y, CANCEL_W, CANCEL_H, OVL_BLUE);
@@ -996,8 +1142,15 @@ static void updateCalOverlay() {
         calOverlay.trackedState = (int8_t)c.state;
         if (prev == 1 && c.state != 1) {
             calOverlay.phase         = c.calibrated ? 1 : 2;
-            calOverlay.resultUntilMs = millis() + 3000;
+            // Result phase auto-dismiss: minimum 3 s after the snapshot
+            // arrives (gives the user time to see the new frame), with
+            // a hard 6 s max in case the fetch never completes.
+            calOverlay.resultUntilMs = millis() + 6000;  // hard cap
             dirtyOverlay             = true;
+            // Refresh the snapshot so the RESULT phase shows the frame
+            // the cam actually used for THIS calibration (not the
+            // previous attempt's frame that loaded on raise).
+            requestCalSnapshot(c.ip);
             return;
         }
         // Early-fail: the camera frequently sets calMsg = "FAILED: ..."
@@ -1025,8 +1178,9 @@ static void updateCalOverlay() {
         bool pastMinAge = (millis() - calOverlay.startedMs) >= 500;
         if (failedNow && msgChangedSinceRaise && pastMinAge) {
             calOverlay.phase         = 2;
-            calOverlay.resultUntilMs = millis() + 3000;
+            calOverlay.resultUntilMs = millis() + 6000;  // hard cap
             dirtyOverlay             = true;
+            requestCalSnapshot(c.ip);
         }
     } else {
         // RESULT_OK or RESULT_FAIL — auto-dismiss after 3 s.
@@ -1223,15 +1377,31 @@ static void pollCam(CamState& c) {
     if (changed || msgChanged) dirtyOverlay = true;
 }
 
-// Background worker on core 0. Drains queued UI actions and polls the
-// cameras (placar polling is gone — we ARE the placar). Single-threaded
-// HTTP, no race on HTTPClient.
+// Background worker on core 0. Drains queued UI actions, services the
+// cal-snapshot fetch flag, and polls the cameras (placar polling is
+// gone — we ARE the placar). All HTTP work is single-threaded here so
+// there's no race on the shared HTTPClient instance.
 static void workerTask(void*) {
     uint32_t lastCamA = 0, lastCamB = 0;
     HttpCmd cmd;
+    char fetchBuf[160];
     while (true) {
         while (xQueueReceive(httpQueue, &cmd, 0) == pdTRUE) {
             httpExec(cmd.url);
+        }
+        // Snapshot fetch — only fires when a CAL action set snapFetchReq
+        // (and pre-set calSnapReady=false to release the buffer).
+        if (snapFetchReq) {
+            // Copy the URL out under the same flag-protocol since the
+            // caller might rewrite snapFetchUrl after seeing
+            // snapFetchReq=false (we clear it below).
+            for (size_t i = 0; i < sizeof(fetchBuf); i++) {
+                fetchBuf[i] = snapFetchUrl[i];
+                if (fetchBuf[i] == 0) break;
+            }
+            fetchBuf[sizeof(fetchBuf) - 1] = 0;
+            snapFetchReq = false;
+            fetchCalSnapshot(fetchBuf);
         }
         if (WiFi.status() == WL_CONNECTED) {
             uint32_t now = millis();
@@ -1240,6 +1410,15 @@ static void workerTask(void*) {
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
+}
+
+// Helper for the runAction / state-machine paths — releases the
+// snapshot buffer and asks the worker to refill it from the given URL.
+static void requestCalSnapshot(const char* ip) {
+    calSnapReady = false;
+    snprintf(snapFetchUrl, sizeof(snapFetchUrl),
+             "http://%s/cal-snapshot", ip);
+    snapFetchReq = true;
 }
 
 void setup() {
@@ -1258,6 +1437,23 @@ void setup() {
     gfx->setRotation(0);
     pinMode(pins::LCD_BACKLIGHT, OUTPUT);
     digitalWrite(pins::LCD_BACKLIGHT, HIGH);
+
+    // Calibration-snapshot machinery: ps_malloc the JPEG receive buffer
+    // (PSRAM-backed, 32 KB — plenty for QVGA cam JPEGs which run ~2 KB),
+    // and configure TJpg_Decoder to stream decoded RGB565 blocks into
+    // our panel via calSnapTjpgOutput. setSwapBytes(true) matches the
+    // Arduino_GFX panel's pixel byte order.
+    calSnapJpegBuf = (uint8_t*)ps_malloc(CAL_SNAP_JPEG_MAX);
+    if (!calSnapJpegBuf) {
+        Serial.println("[snap] ERROR: ps_malloc failed — preview disabled");
+    } else {
+        Serial.printf("[snap] PSRAM JPEG buffer alloc'd at %p (%u bytes)\n",
+                      calSnapJpegBuf, (unsigned)CAL_SNAP_JPEG_MAX);
+    }
+    TJpgDec.setJpgScale(1);
+    TJpgDec.setSwapBytes(true);
+    TJpgDec.setCallback(calSnapTjpgOutput);
+
     renderSplash("Conectando WiFi...", COL_DIM);
 
     // I2C bus comes up at the standard 100 kHz; GT911 supports up to 400
