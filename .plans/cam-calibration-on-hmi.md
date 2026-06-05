@@ -237,3 +237,38 @@ When ready to implement:
 
 If Option B is approved later, repeat steps 1–7 on the overlay
 struct + renderer.
+
+---
+
+## STATUS — 2026-06-04
+
+**Option B is SHIPPED.** Option A was skipped because Option B
+covers everything A would have shown (live `calMsg`, thresholds on
+success, retry hint on failure) on a more visible canvas. Option C
+remains deferred.
+
+Final implementation across four commits:
+- `1b36d56` — baseline (overlay struct, state machine, partial
+  panel covering the score area).
+- `cb9fe2e` — polish: buffer 40 → 64 bytes, raise-time `calMsg`
+  snapshot + 500 ms min-age gate (kills the "neither change took"
+  illusion when stale FAILED message was on c.calMsg from the
+  previous attempt), solid white fillRect instead of dark rounded
+  panel.
+- `a33cb2e` — full-screen 800 × 480 white panel with all underlay
+  redraws (including `serviceTouch` press-feedback) gated by
+  `!overlayActive()`.
+- `dcb85b7` — both dismiss paths call `renderFull()` directly
+  instead of relying on the loop's per-flag handlers (the loop's
+  `dirtyButtons` path only repaints button index 5, leaving the
+  other 7 placar buttons white-on-white after a full-screen
+  overlay).
+
+User-visible result, confirmed via `/remote-control` screenshots:
+tap CAL → entire screen flips to a white modal with title + live
+cam message + progress bar + Cancelar → 3 s result phase
+(`Calibrado <Lado>` + learned thresholds, or `Falhou <Lado>` +
+retry hint) → clean placar repaint on dismiss. All 70 integration
+tests still pass.
+
+See `.plans/session-2026-06-04.md` for the full session log.
