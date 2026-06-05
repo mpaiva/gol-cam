@@ -415,6 +415,7 @@ constexpr uint16_t COL_BLACK = 0x0000;
 // Forward declarations (needed because runAction's optimistic redraw
 // path calls back into the renderer).
 static void drawScoreDigits();
+static void renderFull();
 static void drawHeader();
 static void drawSideStatus();
 static void drawButton(int idx);
@@ -720,11 +721,12 @@ static void runAction(ActionId a) {
             calOverlay.phase         = 0;
             calOverlay.side          = -1;
             calOverlay.resultUntilMs = 0;
-            // Repaint everything the (full-screen) overlay covered.
-            dirtyHeader  = true;
-            dirtyDigits  = true;
-            dirtyButtons = true;
-            dirtyStatus  = true;
+            // Full repaint — the overlay covered the whole screen, and
+            // the loop's normal dirtyButtons handler only repaints one
+            // button (START, index 5). Without an explicit full
+            // re-render the other 7 buttons stay white-on-white.
+            renderFull();
+            dirtyHeader = dirtyDigits = dirtyButtons = dirtyStatus = false;
             break;
         }
         case ACT_START_PAUSE: {
@@ -1032,11 +1034,11 @@ static void updateCalOverlay() {
             calOverlay.side          = -1;
             calOverlay.phase         = 0;
             calOverlay.resultUntilMs = 0;
-            // Repaint everything the (full-screen) overlay was covering.
-            dirtyHeader  = true;
-            dirtyDigits  = true;
-            dirtyButtons = true;
-            dirtyStatus  = true;
+            // Full repaint — same reason as ACT_CAL_CANCEL: the
+            // loop's dirtyButtons path only redraws ONE button, but
+            // we need all 8 back after a full-screen overlay.
+            renderFull();
+            dirtyHeader = dirtyDigits = dirtyButtons = dirtyStatus = false;
         }
     }
 }
