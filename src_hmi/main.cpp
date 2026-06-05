@@ -67,7 +67,12 @@ Arduino_ESP32RGBPanel *rgbpanel = new Arduino_ESP32RGBPanel(
     1, 8, 4, 43,
     1, 8, 4, 12,
     1,
-    16000000
+    8000000     // 8 MHz pixel clock (was 16 MHz). Experiment: halves the
+                // LCD's PSRAM DMA bandwidth (was ~32 MB/s), testing whether
+                // DMA contention with WiFi explains the HMI's /status
+                // refusing connections under load. If success rate jumps,
+                // contention is the root cause. See
+                // .plans/hmi-cam-polling-stability.md §7b.
 );
 Arduino_RGB_Display *gfx = new Arduino_RGB_Display(
     800, 480, rgbpanel, 0, true);

@@ -233,16 +233,26 @@ Arduino-ESP32 stack: long-lived high-bandwidth LCD DMA can starve
 the WiFi MAC and drop incoming SYN packets.
 
 Possible mitigations to investigate next:
+- ~~Use psram framebuffer~~ — verified already the case
+  (`fb_in_psram = 1` in Arduino_GFX's panel config).
+- ~~Lower the LCD pixel clock~~ — **TESTED + SHIPPED**. Dropping
+  from 16 MHz to 8 MHz pclk took the 30 s × 1 Hz soak from 6/30
+  (20 %) to 30/30, and a 90 s × 1 Hz triple-board soak to 80/90
+  (89 %, vs 20 % baseline). Refresh dropped from ~33 Hz to
+  ~17 Hz; user confirms no visible flicker on this panel.
+  Commit forthcoming.
 - Pin the WebServer task to the SAME core as the LCD driver (or
   the OPPOSITE core), to control whether they compete for cache /
-  bus access.
-- Lower the LCD pixel clock (currently 16 MHz) to reduce DMA
-  burst pressure.
-- Use psram framebuffer (Arduino_GFX supports `psramBuffer` ctor
-  arg) so LCD DMA reads from PSRAM instead of internal SRAM,
-  freeing internal SRAM for WiFi.
+  bus access. — defer; the pclk halving alone may be sufficient.
 - Throttle background gfx redraws (we already only redraw on
-  dirty flags, but a tighter audit might help).
+  dirty flags, but a tighter audit might help). — defer.
+
+**Hypothesis confirmed:** the HMI's lockup was LCD DMA bandwidth
+contention with WiFi on the PSRAM bus. At 16 MHz pclk the LCD was
+DMAing ~32 MB/s out of PSRAM continuously to refresh the panel,
+starving WiFi's PSRAM access for incoming packet buffers. At
+8 MHz the bandwidth is ~16 MB/s and WiFi gets enough headroom for
+the `esp_http_server` to accept new connections reliably.
 
 Level B (the throttle from 1 Hz → 0.5 Hz during overlay) was kept
 and committed. It's a real reduction of client-side socket churn
