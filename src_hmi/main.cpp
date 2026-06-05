@@ -268,8 +268,14 @@ namespace gt911 {
 // =============================================================
 // Camera state — both cameras polled every CAM_POLL_MS so we can render
 // status pills under HOME/AWAY without serially blocking the touch loop.
+// While the calibration overlay is in RUNNING phase, we throttle the
+// poll rate to CAM_POLL_MS_OVERLAY (0.5 Hz) — the cal-snapshot fetch
+// dominates that window anyway and slower polling reduces LWIP socket
+// churn that would otherwise wedge the HMI's web server. See
+// .plans/hmi-cam-polling-stability.md (Level B).
 // =============================================================
-constexpr uint32_t CAM_POLL_MS = 1000;
+constexpr uint32_t CAM_POLL_MS         = 1000;   // baseline 1 Hz
+constexpr uint32_t CAM_POLL_MS_OVERLAY = 2000;   // 0.5 Hz during cal overlay
 
 struct CamState {
     const char* ip;
@@ -1161,14 +1167,22 @@ static void updateCalOverlay() {
         // it. Once in RESULT_FAIL we sit out the 3 s timer regardless
         // of any later cam updates.
         const char* m = c.calMsg;
+        // Early-fail: cam's calMsg starts with "FAILED" or "FALHOU".
         bool failedNow = (m[0] == 'F') &&
             ( (m[1]=='A' && m[2]=='I' && m[3]=='L' && m[4]=='E' && m[5]=='D') ||
               (m[1]=='A' && m[2]=='L' && m[3]=='H' && m[4]=='O' && m[5]=='U') );
-        // Only treat this as a fresh failure if (a) the calMsg differs
+        // Early-success: cam's calMsg starts with "OK!" (the prefix
+        // runCalibrate() uses on a successful edge lock). Without this,
+        // when pollCam misses the brief STATE_CALIBRATING window (cal
+        // can finish in <1 s, polling is at 1 Hz), the overlay never
+        // observes the state=1→0 edge and stays in RUNNING phase
+        // forever despite the cam reporting OK in calMsg.
+        bool succeededNow = (m[0] == 'O') && (m[1] == 'K') && (m[2] == '!');
+        // Only treat this as a fresh result if (a) the calMsg differs
         // from the snapshot we took at CAL-tap time, AND (b) the overlay
         // has been visible for at least 500 ms (gives the cam time to
         // actually start a new cycle). Without these gates, a stale
-        // FAILED message from a previous attempt flips us to RESULT_FAIL
+        // OK/FAILED message from a previous attempt flips us to RESULT
         // on frame 1 and the operator never sees the "Calibrando" phase.
         bool msgChangedSinceRaise = false;
         for (size_t k = 0; k < sizeof(calOverlay.msgAtRaise); k++) {
@@ -1176,9 +1190,9 @@ static void updateCalOverlay() {
             if (m[k] == 0) break;
         }
         bool pastMinAge = (millis() - calOverlay.startedMs) >= 500;
-        if (failedNow && msgChangedSinceRaise && pastMinAge) {
-            calOverlay.phase         = 2;
-            calOverlay.resultUntilMs = millis() + 6000;  // hard cap
+        if ((failedNow || succeededNow) && msgChangedSinceRaise && pastMinAge) {
+            calOverlay.phase         = succeededNow ? 1 : 2;  // 1=OK, 2=FAIL
+            calOverlay.resultUntilMs = millis() + 6000;       // hard cap
             dirtyOverlay             = true;
             requestCalSnapshot(c.ip);
         }
@@ -1330,13 +1344,20 @@ static void connectWiFi() {
 }
 
 static void pollCam(CamState& c) {
+    // Short-lived HTTPClient (Level A from
+    // .plans/hmi-cam-polling-stability.md was tried with
+    // setReuse(true) + persistent instance; that REGRESSED the success
+    // rate from ~80% to ~20% during a 30 s soak — likely because
+    // setReuse holds the socket but the cam's keep-alive expires before
+    // we poll again, leaving us with half-closed sockets. Reverted.
+    // The throttle (Level B) below remains.
     HTTPClient http;
     String url = "http://" + String(c.ip) + "/status";
     if (!http.begin(url)) {
         if (c.online) { c.online = false; dirtyStatus = true; }
         return;
     }
-    http.setTimeout(1200);
+    http.setTimeout(1500);
     int code = http.GET();
     if (code != 200) {
         if (c.online) { c.online = false; dirtyStatus = true; }
@@ -1405,8 +1426,14 @@ static void workerTask(void*) {
         }
         if (WiFi.status() == WL_CONNECTED) {
             uint32_t now = millis();
-            if (now - lastCamA >= CAM_POLL_MS) { pollCam(camA); lastCamA = now; }
-            if (now - lastCamB >= CAM_POLL_MS) { pollCam(camB); lastCamB = now; }
+            // Pick the poll interval dynamically: 2 s while the
+            // calibration overlay is up + running (snapshot fetches
+            // dominate that window), 1 s baseline otherwise.
+            uint32_t pollInterval = (overlayActive() && calOverlay.phase == 0)
+                                  ? CAM_POLL_MS_OVERLAY
+                                  : CAM_POLL_MS;
+            if (now - lastCamA >= pollInterval) { pollCam(camA); lastCamA = now; }
+            if (now - lastCamB >= pollInterval) { pollCam(camB); lastCamB = now; }
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }

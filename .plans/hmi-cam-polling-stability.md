@@ -204,6 +204,53 @@ All work in `src_hmi/main.cpp`.
 
 ---
 
+## 7b. Update — 2026-06-04 attempt
+
+Level A (persistent `HTTPClient` per cam with `setReuse(true)`) was
+implemented and tested. Result: a 30 s, 1 Hz soak against the HMI's
+`/status` went from baseline **~20 % success → still 20 %**. No
+improvement, possibly slightly worse. Reverted.
+
+Then ran the SAME 30 s, 1 Hz soak against all three boards in
+parallel:
+
+| Board | Success |
+|---|---|
+| HMI `/status` @ `.89` | **6 / 30** (20 %) |
+| Cam A `/status` @ `.90` | **30 / 30** (100 %) |
+| Cam B `/status` @ `.91` | **30 / 30** (100 %) |
+
+Same `esp_http_server` library, same protocol, same WiFi network.
+The cams handle the load perfectly; the HMI doesn't. Conclusion:
+the lockup is NOT primarily about socket-pool churn on the HMI's
+client side. It's something HMI-specific.
+
+Most likely candidate: **RGB-display DMA contention with WiFi on
+ESP32-S3**. The HMI continuously DMAs the 800×480×16 bpp framebuffer
+to the LCD peripheral at 60 Hz; WiFi also needs DMA channels for
+TX/RX. Known issue in the ESP32-S3 + parallel-RGB-display +
+Arduino-ESP32 stack: long-lived high-bandwidth LCD DMA can starve
+the WiFi MAC and drop incoming SYN packets.
+
+Possible mitigations to investigate next:
+- Pin the WebServer task to the SAME core as the LCD driver (or
+  the OPPOSITE core), to control whether they compete for cache /
+  bus access.
+- Lower the LCD pixel clock (currently 16 MHz) to reduce DMA
+  burst pressure.
+- Use psram framebuffer (Arduino_GFX supports `psramBuffer` ctor
+  arg) so LCD DMA reads from PSRAM instead of internal SRAM,
+  freeing internal SRAM for WiFi.
+- Throttle background gfx redraws (we already only redraw on
+  dirty flags, but a tighter audit might help).
+
+Level B (the throttle from 1 Hz → 0.5 Hz during overlay) was kept
+and committed. It's a real reduction of client-side socket churn
+during the calibration window, but it's not the root cause of the
+HMI's WebServer instability. The plan now has three unresolved
+mitigations to try (LCD DMA priority, lower pixel clock, PSRAM
+framebuffer) before the lockup will reliably go away.
+
 ## 8. Out of scope
 
 - Cam-side firmware changes. The cam's `esp_http_server` is fine
