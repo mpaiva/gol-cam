@@ -432,6 +432,53 @@ enum ActionId {
 };
 static volatile ActionId pendingAction = ACT_NONE;
 
+// =============================================================
+// Match timer — HMI-local count-up. The cam doesn't expose a
+// match-start timestamp, so the timer lives entirely on the HMI and
+// is driven by the START / PAUSE / RESUME / RESET button taps. See
+// .plans/hmi-modern-redesign.md §4 for the state machine.
+// =============================================================
+enum MatchState { MS_IDLE, MS_PLAYING, MS_PAUSED };
+static MatchState matchState         = MS_IDLE;
+static uint32_t   matchStartMs       = 0;   // when current PLAY segment started
+static uint32_t   matchPausedAccumMs = 0;   // elapsed before the current segment
+// Ring scale — full ring after this many ms. Reference image showed 45 min
+// halves; for a button-soccer match a 5 min full-ring rotation feels alive.
+constexpr uint32_t MATCH_RING_FULL_MS = 5 * 60 * 1000;
+static volatile bool dirtyTimer = false;
+
+static uint32_t matchElapsedMs() {
+    if (matchState == MS_PLAYING) {
+        return matchPausedAccumMs + (millis() - matchStartMs);
+    }
+    return matchPausedAccumMs;
+}
+static void matchStart() {
+    matchStartMs = millis();
+    matchState   = MS_PLAYING;
+    dirtyTimer   = true;
+}
+static void matchPause() {
+    if (matchState == MS_PLAYING) {
+        matchPausedAccumMs += (millis() - matchStartMs);
+        matchState = MS_PAUSED;
+        dirtyTimer = true;
+    }
+}
+static void matchResume() {
+    if (matchState == MS_PAUSED) {
+        matchStartMs = millis();
+        matchState   = MS_PLAYING;
+        dirtyTimer   = true;
+    }
+}
+static void matchReset() {
+    matchPausedAccumMs = 0;
+    matchStartMs       = 0;
+    matchState         = MS_IDLE;
+    dirtyTimer         = true;
+}
+
 struct Button {
     int x, y, w, h;
     const char* label;
@@ -439,35 +486,58 @@ struct Button {
     uint16_t fillPressed;
     ActionId action;
 };
-// Two rows of buttons fit comfortably under a slightly compressed score
-// area. Top row = referee score adjustments (per side). Bottom row =
-// match-control actions.
+// Single-row footer ribbon at y=350-460 (modern-redesign layout). All
+// buttons share h=110 px so they read as one row of pills.
+// Width math: 10 + 55+5+55 + 5 + 120+5+165+5+120+5+120 + 5 + 55+5+55 + 10
+//           = 10 + 110 + 5 + 525 + 5 + 110 + 10 = 775 ≤ 800. Margins.
+//
+// Indexes used by the dirty-flag handler (STARTPAUSE_BUTTON_IDX
+// repaints just the START key when its label flips on cam state):
+//   0=A-  1=A+  2=CAL A  3=START  4=RESET  5=CAL B  6=B-  7=B+
 static Button buttons[] = {
-    // Score-adjust row — green +, dark red −. Paired by side so the
-    // operator's eye doesn't have to cross the middle to find them.
-    {  20, 230, 170, 70, "A +",   0x0640, 0x07E0, ACT_A_PLUS  },
-    { 210, 230, 170, 70, "A -",   0x6000, 0xA800, ACT_A_MINUS },
-    { 420, 230, 170, 70, "B -",   0x6000, 0xA800, ACT_B_MINUS },
-    { 610, 230, 170, 70, "B +",   0x0640, 0x07E0, ACT_B_PLUS  },
-    // Match-control row
-    {  20, 320, 170, 70, "CAL A", 0xFD20, 0xFEC0, ACT_CAL_A },          // orange
-    { 210, 320, 170, 70, "START", 0x0640, 0x07E0, ACT_START_PAUSE },    // label flips runtime
-    { 420, 320, 170, 70, "RESET", 0x6000, 0xA800, ACT_RESET_ALL },      // dark red
-    { 610, 320, 170, 70, "CAL B", 0xFD20, 0xFEC0, ACT_CAL_B },
+    {  10, 350,  55, 110, "-",     0xF800, 0xC000, ACT_A_MINUS },    // red
+    {  70, 350,  55, 110, "+",     0x07E0, 0x0640, ACT_A_PLUS  },    // green
+    { 130, 350, 120, 110, "CAL A", 0xFD20, 0xFEC0, ACT_CAL_A   },    // amber
+    { 255, 350, 165, 110, "START", 0x07E0, 0x0640, ACT_START_PAUSE }, // green, label flips
+    { 425, 350, 120, 110, "RESET", 0xF800, 0xC000, ACT_RESET_ALL },  // red
+    { 550, 350, 120, 110, "CAL B", 0xFD20, 0xFEC0, ACT_CAL_B   },    // amber
+    { 675, 350,  55, 110, "-",     0xF800, 0xC000, ACT_B_MINUS },    // red
+    { 735, 350,  55, 110, "+",     0x07E0, 0x0640, ACT_B_PLUS  },    // green
 };
 constexpr int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 static int pressedButton = -1;     // index of currently pressed button (-1 none)
+constexpr int STARTPAUSE_BUTTON_IDX = 3;
 
-// Colour palette (RGB565)
-constexpr uint16_t COL_BG    = 0x0000;
-constexpr uint16_t COL_SCORE = 0x07E0;
-constexpr uint16_t COL_LABEL = 0x528A;
-constexpr uint16_t COL_DIM   = 0x39C7;
-constexpr uint16_t COL_RED   = 0xF800;
-constexpr uint16_t COL_GREEN = 0x07E0;
-constexpr uint16_t COL_ORANGE= 0xFD20;
-constexpr uint16_t COL_WHITE = 0xFFFF;
-constexpr uint16_t COL_BLACK = 0x0000;
+// Modern card-based palette modelled on the user's reference image
+// (a 2014 FIFA ARG vs GER scoreboard widget). See
+// .plans/hmi-modern-redesign.md for the full spec.
+constexpr uint16_t COL_BG        = 0x0500;    // deep green field
+constexpr uint16_t COL_PILL      = 0xEF7D;    // warm cream pill bg
+constexpr uint16_t COL_PILL_DARK = 0x2104;    // near-black score block bg
+constexpr uint16_t COL_TEXT_DARK = 0x4208;    // slate text on cream
+constexpr uint16_t COL_TEXT_NUM  = 0x2104;    // timer numerals
+constexpr uint16_t COL_RING_FILL = 0x07E2;    // emerald (timer ring progress)
+constexpr uint16_t COL_RING_TRACK= 0xC638;    // light grey (timer ring track)
+constexpr uint16_t COL_APP_BADGE = 0x05A0;    // green-felt circle (left of pill)
+constexpr uint16_t COL_DISC_HOME = 0x041F;    // HOME team disc — cobalt blue
+constexpr uint16_t COL_DISC_AWAY = 0xFE60;    // AWAY team disc — golden yellow
+constexpr uint16_t COL_SCORE     = 0xFFFF;    // white digit on dark block
+constexpr uint16_t COL_LABEL     = 0x4208;    // text on pill (backwards-compat alias)
+constexpr uint16_t COL_DIM       = 0x39C7;
+constexpr uint16_t COL_RED       = 0xF800;
+constexpr uint16_t COL_GREEN     = 0x07E0;
+constexpr uint16_t COL_ORANGE    = 0xFD20;
+constexpr uint16_t COL_YELLOW    = 0xFFE0;
+constexpr uint16_t COL_GREY      = 0x8410;
+constexpr uint16_t COL_WHITE     = 0xFFFF;
+constexpr uint16_t COL_BLACK     = 0x0000;
+// Status-dot colors (small filled circles on the status pills).
+constexpr uint16_t COL_DOT_READY   = COL_GREEN;
+constexpr uint16_t COL_DOT_CAL     = COL_ORANGE;
+constexpr uint16_t COL_DOT_PLAY    = COL_GREEN;
+constexpr uint16_t COL_DOT_PAUSE   = COL_YELLOW;
+constexpr uint16_t COL_DOT_OFFLINE = COL_RED;
+constexpr uint16_t COL_DOT_IDLE    = COL_GREY;
 
 // Forward declarations (needed because runAction's optimistic redraw
 // path calls back into the renderer).
@@ -882,6 +952,10 @@ static void runAction(ActionId a) {
             const char* cmd = anyPlaying ? "pause" : (anyPaused ? "resume" : "start");
             httpKick(String("http://") + camA.ip + "/" + cmd);
             httpKick(String("http://") + camB.ip + "/" + cmd);
+            // Match timer follows the same lifecycle as the cams.
+            if (anyPlaying)      matchPause();
+            else if (anyPaused)  matchResume();
+            else                 matchStart();
             break;
         }
         case ACT_RESET_ALL:
@@ -889,6 +963,7 @@ static void runAction(ActionId a) {
             dirtyDigits = true;
             httpKick(String("http://") + camA.ip + "/reset");
             httpKick(String("http://") + camB.ip + "/reset");
+            matchReset();
             break;
         // Referee adjustments — local-only, max 99, min 0 (same clamp
         // the placar's /goal and /goal-undo handlers use). Cameras'
@@ -903,59 +978,205 @@ static void runAction(ActionId a) {
 }
 
 // =============================================================
-// Rendering
+// Rendering — modern card layout. See .plans/hmi-modern-redesign.md.
+// Layout summary:
+//   y=10-200   scoreboard pill (cream, with app badge + timer + scores)
+//   y=215-310  two status pills (HOME / AWAY)
+//   y=350-460  control row (8 pill buttons)
 // =============================================================
-static void drawHeader() {
-    gfx->fillRect(0, 0, 800, 60, 0x18E3);
-    gfx->setTextColor(COL_WHITE, 0x18E3);
-    gfx->setTextSize(3);
-    gfx->setCursor(20, 18);
-    gfx->print("gol-cam");
 
-    // Right-side status pill — green PLACAR when WiFi is up so cameras
-    // can reach our /goal endpoints, dark red OFFLINE otherwise.
-    bool wifi = (WiFi.status() == WL_CONNECTED);
-    const char* tag = wifi ? "PLACAR" : "OFFLINE";
-    uint16_t pillCol = wifi ? 0x0640 : 0x8800;
-    int pillW = (int)strlen(tag) * 18 + 24;
-    gfx->fillRoundRect(800 - pillW - 20, 14, pillW, 32, 6, pillCol);
-    gfx->setTextSize(2);
-    gfx->setCursor(800 - pillW - 8, 22);
-    gfx->print(tag);
+// Geometry of the scoreboard pill.
+constexpr int SB_X = 30,  SB_Y = 10,  SB_W = 740, SB_H = 195, SB_R = 28;
+// Internal layout — left badge, timer disc, two team rows.
+constexpr int APP_CX = SB_X + 80,   APP_CY = SB_Y + SB_H/2,  APP_R = 50;
+constexpr int TIM_CX = SB_X + 240,  TIM_CY = SB_Y + SB_H/2,  TIM_R = 78;
+constexpr int TEAM_X = SB_X + 340;
+constexpr int TEAM_W = SB_W - 340 - 20;
+constexpr int TEAM_ROW_H = (SB_H - 40) / 2;   // two rows split vertical space
+
+// Status-pill geometry (two cream pills, one per side).
+constexpr int SP_Y = 215, SP_H = 80, SP_R = 18;
+constexpr int SP_A_X = 30, SP_W = 360;
+
+// Small filled circle used as a status dot.
+static void drawStatusDot(int x, int y, uint16_t color) {
+    gfx->fillCircle(x, y, 7, color);
 }
 
-static void drawScoreDigits() {
-    char a[8], b[8];
-    snprintf(a, sizeof(a), "%d", placarA < 0 ? 0 : placarA);
-    snprintf(b, sizeof(b), "%d", placarB < 0 ? 0 : placarB);
+// Draw a partial ring around (cx, cy) at radius r with thickness `th`.
+// `progress01` in [0..1] controls how much of the ring is fill-coloured
+// (clockwise from 12 o'clock). The remainder is track-coloured.
+// Implemented by walking the inner+outer radii and shading per-angle.
+static void drawTimerRing(int cx, int cy, int r, int th, float progress01,
+                          uint16_t fillCol, uint16_t trackCol) {
+    if (progress01 < 0) progress01 = 0;
+    if (progress01 > 1) progress01 = 1;
+    const float TAU = 6.28318530718f;
+    // -PI/2 starts at 12 o'clock; +clockwise direction.
+    const float startA = -TAU / 4.0f;
+    const float endA   = startA + TAU * progress01;
+    for (int rr = r - th; rr <= r; rr++) {
+        for (int deg = 0; deg < 360; deg++) {
+            float a = startA + (TAU * deg) / 360.0f;
+            int px = cx + (int)(rr * cosf(a));
+            int py = cy + (int)(rr * sinf(a));
+            uint16_t c = (a <= endA) ? fillCol : trackCol;
+            gfx->drawPixel(px, py, c);
+        }
+    }
+}
 
-    gfx->fillRect(0, 65, 800, 160, COL_BG);
+// Format the match timer as "MM'SS\"".
+static void formatTimer(char* minBuf, size_t mlen, char* secBuf, size_t slen) {
+    uint32_t e = matchElapsedMs() / 1000;
+    int mins = (int)(e / 60);
+    int secs = (int)(e % 60);
+    snprintf(minBuf, mlen, "%d'", mins);
+    snprintf(secBuf, slen, "%02d\"", secs);
+}
 
-    // Compressed to text size 12 (60 wide × 84 tall per glyph) so the
-    // score still reads from across the room but leaves vertical room
-    // for the two button rows underneath.
-    gfx->setTextSize(12);
-    gfx->setTextColor(COL_SCORE, COL_BG);
-    const int yDigit = 85;
-    const int aw = (int)strlen(a) * 60;
-    const int bw = (int)strlen(b) * 60;
-    gfx->setCursor(200 - aw/2, yDigit);
-    gfx->print(a);
-    gfx->setCursor(600 - bw/2, yDigit);
-    gfx->print(b);
+static void drawScoreboardPill() {
+    // Background pill.
+    gfx->fillRoundRect(SB_X, SB_Y, SB_W, SB_H, SB_R, COL_PILL);
+    gfx->drawRoundRect(SB_X, SB_Y, SB_W, SB_H, SB_R, COL_WHITE);
+    gfx->drawRoundRect(SB_X+1, SB_Y+1, SB_W-2, SB_H-2, SB_R, COL_WHITE);
 
-    gfx->setTextSize(4);
-    gfx->setTextColor(COL_LABEL, COL_BG);
-    gfx->setCursor(388, 115);
-    gfx->print("x");
+    // --- App badge (left). Green-felt circle with a white "G" glyph. ---
+    gfx->fillCircle(APP_CX, APP_CY, APP_R, COL_APP_BADGE);
+    gfx->drawCircle(APP_CX, APP_CY, APP_R, COL_WHITE);
+    gfx->setTextSize(5);
+    gfx->setTextColor(COL_WHITE, COL_APP_BADGE);
+    // Glyph "G" approx 30×40 — centre by hand.
+    gfx->setCursor(APP_CX - 15, APP_CY - 20);
+    gfx->print("G");
+
+    // --- Timer disc (centre). White circle with minute + seconds. ---
+    gfx->fillCircle(TIM_CX, TIM_CY, TIM_R, COL_WHITE);
+    // Ring around the disc.
+    float prog = (float)matchElapsedMs() / (float)MATCH_RING_FULL_MS;
+    if (prog > 1.0f) prog -= (int)prog;  // wrap so the ring keeps moving
+    drawTimerRing(TIM_CX, TIM_CY, TIM_R + 8, 4, prog,
+                  COL_RING_FILL, COL_RING_TRACK);
+
+    char minBuf[8], secBuf[8];
+    formatTimer(minBuf, sizeof(minBuf), secBuf, sizeof(secBuf));
+    int mw = (int)strlen(minBuf) * 36;        // size 6 → 36 px wide
+    gfx->setTextSize(6);
+    gfx->setTextColor(COL_TEXT_NUM, COL_WHITE);
+    gfx->setCursor(TIM_CX - mw/2, TIM_CY - 28);
+    gfx->print(minBuf);
+    int sw = (int)strlen(secBuf) * 18;        // size 3 → 18 px wide
+    gfx->setTextSize(3);
+    gfx->setTextColor(COL_GREY, COL_WHITE);
+    gfx->setCursor(TIM_CX - sw/2, TIM_CY + 20);
+    gfx->print(secBuf);
+
+    // --- Team rows (right). Two stacked rows: label + disc + dark
+    // score block + white digit. ---
+    auto drawTeamRow = [&](int side) {
+        bool home = (side == 0);
+        int rowY = SB_Y + 20 + (home ? 0 : TEAM_ROW_H);
+        uint16_t discCol = home ? COL_DISC_HOME : COL_DISC_AWAY;
+        const char* lbl = home ? "HOME" : "AWAY";
+        int score = home ? (int)placarA : (int)placarB;
+        if (score < 0) score = 0;
+
+        // Team label (size 3, slate).
+        gfx->setTextSize(3);
+        gfx->setTextColor(COL_TEXT_DARK, COL_PILL);
+        gfx->setCursor(TEAM_X, rowY + 22);
+        gfx->print(lbl);
+        // Colored disc (mini "flag").
+        gfx->fillCircle(TEAM_X + 110, rowY + TEAM_ROW_H/2, 16, discCol);
+        gfx->drawCircle(TEAM_X + 110, rowY + TEAM_ROW_H/2, 16, COL_WHITE);
+
+        // Dark score block + white digit.
+        int blkX = TEAM_X + 140;
+        int blkW = SB_W + SB_X - blkX - 30;
+        int blkH = TEAM_ROW_H - 12;
+        int blkY = rowY + 6;
+        gfx->fillRoundRect(blkX, blkY, blkW, blkH, 12, COL_PILL_DARK);
+
+        char d[6];
+        snprintf(d, sizeof(d), "%d", score);
+        gfx->setTextSize(6);
+        gfx->setTextColor(COL_SCORE, COL_PILL_DARK);
+        int dw = (int)strlen(d) * 36;
+        gfx->setCursor(blkX + (blkW - dw)/2, blkY + (blkH - 48)/2);
+        gfx->print(d);
+    };
+    drawTeamRow(0);
+    drawTeamRow(1);
+}
+
+// Just the timer disc — for the 1 Hz tick repaint (saves redrawing the
+// whole scoreboard pill).
+static void drawTimerOnly() {
+    gfx->fillCircle(TIM_CX, TIM_CY, TIM_R, COL_WHITE);
+    float prog = (float)matchElapsedMs() / (float)MATCH_RING_FULL_MS;
+    if (prog > 1.0f) prog -= (int)prog;
+    drawTimerRing(TIM_CX, TIM_CY, TIM_R + 8, 4, prog,
+                  COL_RING_FILL, COL_RING_TRACK);
+    char minBuf[8], secBuf[8];
+    formatTimer(minBuf, sizeof(minBuf), secBuf, sizeof(secBuf));
+    int mw = (int)strlen(minBuf) * 36;
+    gfx->setTextSize(6);
+    gfx->setTextColor(COL_TEXT_NUM, COL_WHITE);
+    gfx->setCursor(TIM_CX - mw/2, TIM_CY - 28);
+    gfx->print(minBuf);
+    int sw = (int)strlen(secBuf) * 18;
+    gfx->setTextSize(3);
+    gfx->setTextColor(COL_GREY, COL_WHITE);
+    gfx->setCursor(TIM_CX - sw/2, TIM_CY + 20);
+    gfx->print(secBuf);
+}
+
+// One status pill: cream rounded rect, status dot, state text, cam IP.
+static void drawStatusPill(int side) {
+    bool home = (side == 0);
+    int x = home ? SP_A_X : (SP_A_X + SP_W + 20);
+    int y = SP_Y;
+    const CamState& c = home ? camA : camB;
+
+    gfx->fillRoundRect(x, y, SP_W, SP_H, SP_R, COL_PILL);
+    gfx->drawRoundRect(x, y, SP_W, SP_H, SP_R, COL_WHITE);
+
+    uint16_t dotCol;
+    const char* tag;
+    if (!c.online)         { dotCol = COL_DOT_OFFLINE; tag = "OFFLINE"; }
+    else if (c.state == 1) { dotCol = COL_DOT_CAL;     tag = "CAL...";  }
+    else if (c.state == 4) { dotCol = COL_DOT_CAL;     tag = "AUTO..."; }
+    else if (c.state == 2) { dotCol = COL_DOT_PLAY;    tag = "PLAY";    }
+    else if (c.state == 3) { dotCol = COL_DOT_PAUSE;   tag = "PAUSE";   }
+    else if (c.calibrated) { dotCol = COL_DOT_READY;   tag = "READY";   }
+    else                   { dotCol = COL_DOT_IDLE;    tag = "IDLE";    }
+
+    drawStatusDot(x + 28, y + 32, dotCol);
+
+    gfx->setTextSize(3);
+    gfx->setTextColor(COL_TEXT_DARK, COL_PILL);
+    gfx->setCursor(x + 50, y + 20);
+    gfx->print(home ? "HOME" : "AWAY");
+
+    gfx->setTextSize(2);
+    gfx->setTextColor(COL_GREY, COL_PILL);
+    gfx->setCursor(x + 50, y + 50);
+    gfx->print(tag);
+
+    gfx->setTextSize(2);
+    gfx->setTextColor(COL_TEXT_DARK, COL_PILL);
+    int ipw = c.ip ? (int)strlen(c.ip) * 12 : 0;
+    gfx->setCursor(x + SP_W - ipw - 16, y + 50);
+    gfx->print(c.ip ? c.ip : "—");
 }
 
 static void drawButton(int idx) {
     const Button& b = buttons[idx];
     bool pressed = (idx == pressedButton);
     uint16_t fill = pressed ? b.fillPressed : b.fill;
-    gfx->fillRoundRect(b.x, b.y, b.w, b.h, 10, fill);
-    gfx->drawRoundRect(b.x, b.y, b.w, b.h, 10, COL_WHITE);
+    int r = (b.w < 80) ? 16 : 20;
+    gfx->fillRoundRect(b.x, b.y, b.w, b.h, r, fill);
+    gfx->drawRoundRect(b.x, b.y, b.w, b.h, r, COL_WHITE);
 
     // Label — for START button, swap to PAUSE / RESUME based on cam state.
     const char* label = b.label;
@@ -965,10 +1186,16 @@ static void drawButton(int idx) {
         label = anyPlaying ? "PAUSE" : (anyPaused ? "RESUME" : "START");
     }
 
-    gfx->setTextSize(3);
+    // Narrow score-adjusters use size 4 (24×32) so the +/- glyph reads
+    // from across the room. Wider buttons use size 3 (18×24) so longer
+    // labels fit.
+    int textSize = (b.w < 80) ? 4 : 3;
+    int glyphW   = (textSize == 4) ? 24 : 18;
+    int glyphH   = (textSize == 4) ? 32 : 24;
+    int textW    = (int)strlen(label) * glyphW;
+    gfx->setTextSize(textSize);
     gfx->setTextColor(COL_WHITE, fill);
-    int textW = (int)strlen(label) * 18;
-    gfx->setCursor(b.x + b.w/2 - textW/2, b.y + b.h/2 - 12);
+    gfx->setCursor(b.x + (b.w - textW) / 2, b.y + (b.h - glyphH) / 2);
     gfx->print(label);
 }
 
@@ -976,45 +1203,23 @@ static void drawButtons() {
     for (int i = 0; i < NUM_BUTTONS; i++) drawButton(i);
 }
 
-// Per-side status: small coloured pill + HOME/AWAY label. Green = ready
-// (calibrated + idle/play), orange = calibrating, red = offline, grey =
-// idle uncalibrated.
-static void drawSideStatus() {
-    gfx->fillRect(0, 405, 800, 75, COL_BG);
-
-    auto draw = [&](int cx, const char* label, const CamState& c) {
-        gfx->setTextSize(3);
-        gfx->setTextColor(COL_LABEL, COL_BG);
-        int lw = (int)strlen(label) * 18;
-        gfx->setCursor(cx - lw/2, 410);
-        gfx->print(label);
-
-        uint16_t pillCol;
-        const char* tag;
-        if (!c.online)             { pillCol = 0x8800; tag = "OFFLINE"; }
-        else if (c.state == 1)     { pillCol = 0xFD20; tag = "CAL...";  }
-        else if (c.state == 2)     { pillCol = 0x0640; tag = "PLAY";    }
-        else if (c.state == 3)     { pillCol = 0xFFE0; tag = "PAUSE";   }
-        else if (c.calibrated)     { pillCol = 0x0640; tag = "READY";   }
-        else                       { pillCol = 0x39C7; tag = "IDLE";    }
-        int pw = (int)strlen(tag) * 14 + 20;
-        gfx->fillRoundRect(cx - pw/2, 445, pw, 28, 6, pillCol);
-        gfx->setTextSize(2);
-        gfx->setTextColor(COL_WHITE, pillCol);
-        gfx->setCursor(cx - pw/2 + 10, 451);
-        gfx->print(tag);
-    };
-    draw(200, "HOME", camA);
-    draw(600, "AWAY", camB);
+// Backwards-compat shims — the calibration overlay's dismiss path
+// calls drawScoreDigits + drawSideStatus + drawHeader via renderFull.
+// In the new layout those map onto the modern helpers.
+static void drawHeader()      { drawScoreboardPill(); }
+static void drawScoreDigits() { drawScoreboardPill(); }
+static void drawSideStatus()  {
+    drawStatusPill(0);
+    drawStatusPill(1);
 }
 
 static void renderFull() {
     gfx->fillScreen(COL_BG);
     firstFullDraw = false;
-    drawHeader();
-    drawScoreDigits();
+    drawScoreboardPill();
+    drawStatusPill(0);
+    drawStatusPill(1);
     drawButtons();
-    drawSideStatus();
 }
 
 // =============================================================
@@ -1724,11 +1929,29 @@ void loop() {
     // after dismiss processes them naturally (the dismiss path in
     // updateCalOverlay() also sets dirtyDigits + dirtyButtons +
     // dirtyStatus to force a fresh placar repaint).
-    if (!overlayActive() && dirtyHeader)  { dirtyHeader  = false; drawHeader(); }
-    if (!overlayActive() && dirtyDigits)  { dirtyDigits  = false; drawScoreDigits(); }
-    // START is the 6th button (index 5) after the 4 score-adjust buttons.
-    if (!overlayActive() && dirtyButtons) { dirtyButtons = false; drawButton(5); }
-    if (!overlayActive() && dirtyStatus)  { dirtyStatus  = false; drawSideStatus(); }
+    if (!overlayActive() && dirtyHeader)  { dirtyHeader  = false; drawScoreboardPill(); }
+    if (!overlayActive() && dirtyDigits)  { dirtyDigits  = false; drawScoreboardPill(); }
+    if (!overlayActive() && dirtyButtons) { dirtyButtons = false; drawButton(STARTPAUSE_BUTTON_IDX); }
+    if (!overlayActive() && dirtyStatus)  {
+        dirtyStatus = false;
+        drawStatusPill(0);
+        drawStatusPill(1);
+    }
+
+    // 1 Hz timer tick — set dirtyTimer when displayed seconds advance
+    // so we redraw ONLY the timer disc instead of the whole pill.
+    {
+        static uint32_t lastShownSec = 0;
+        uint32_t e = matchElapsedMs() / 1000;
+        if (e != lastShownSec) {
+            lastShownSec = e;
+            dirtyTimer = true;
+        }
+    }
+    if (!overlayActive() && dirtyTimer) {
+        dirtyTimer = false;
+        drawTimerOnly();
+    }
 
     // Overlay paints last so it sits on top of the placar layer. It
     // re-renders whenever pollCam() flags new calMsg / state / progress
