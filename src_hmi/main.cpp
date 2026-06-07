@@ -285,7 +285,7 @@ constexpr uint32_t CAM_POLL_MS_OVERLAY = 2000;   // 0.5 Hz during cal overlay
 struct CamState {
     const char* ip;
     bool online = false;
-    int  state = -1;          // 0=IDLE, 1=CAL, 2=PLAY, 3=PAUSE
+    int  state = -1;          // 0=IDLE, 1=CAL, 2=PLAY, 3=PAUSE, 4=AUTOTUNE
     bool calibrated = false;
     int  goals = 0;
     uint32_t lastPollMs = 0;
@@ -295,6 +295,14 @@ struct CamState {
     int  motionTh = 0;
     int  colorTh = 0;
     int  calContrast = 0;
+    // Auto-tune sweep progress (cam exposes these in /status). Driven
+    // by the autotune sub-phase of the calibration overlay; the chain
+    // is .plans/autotune-chain.md. autoDone is an int from the cam
+    // (`"autoDone":1` not `"autoDone":true`) — extract as int, treat as
+    // bool via `> 0`.
+    int  autoStep  = 0;
+    int  autoTotal = 0;
+    int  autoDone  = 0;
     bool hasCalSnap = false;
     // calMsg can grow long ("FAILED: No edges found (20). Place dadinho
     // dentro do gol"). 64 bytes covers the longest cam messages plus a
@@ -354,15 +362,29 @@ static volatile bool dirtyOverlay = false;
 struct CalOverlay {
     int8_t   side;             // 0 = A (HOME), 1 = B (AWAY), -1 = OFF
     int8_t   phase;            // 0=RUNNING, 1=RESULT_OK, 2=RESULT_FAIL
+    int8_t   subPhase;         // RUNNING-only: 0=TUNING (autotune sweep),
+                               // 1=CAL (existing edge-cal). Skipped to 1
+                               // directly when Level B (60 s cooldown) fires.
     uint32_t resultUntilMs;    // millis() deadline for auto-dismiss
     int8_t   trackedState;     // last cam.state we observed, for edge detect
     uint32_t startedMs;        // when the overlay was raised (for min-age gate)
+    uint32_t subPhaseStartMs;  // when the current sub-phase began (for the
+                               // 20 s autotune watchdog)
     // calMsg snapshot at raise-time — early-fail only fires when the
     // cam's calMsg differs from this (i.e. a fresh failure during THIS
     // calibration cycle, not the stale message from the previous one).
     char     msgAtRaise[64];
 };
-static volatile CalOverlay calOverlay = { -1, 0, 0, -1, 0, {0} };
+static volatile CalOverlay calOverlay = { -1, 0, 0, 0, -1, 0, 0, {0} };
+
+// Last successful autotune timestamp per cam, indexed by side
+// (0 = A, 1 = B). Level B of autotune-chain.md: if <60 s since the
+// last tune, the next CAL tap skips autotune and goes straight to
+// /calibrate, since the cam's exposure is probably still good for
+// the same lighting.
+static uint32_t lastAutotuneMs[2] = {0, 0};
+constexpr uint32_t AUTOTUNE_SKIP_WINDOW_MS = 60000;   // 60 s
+constexpr uint32_t AUTOTUNE_WATCHDOG_MS    = 20000;   // 20 s max before bailing
 
 // "Cancelar" button on the overlay — only hit-tested while overlay is up.
 // Lives centred near the bottom of the (now full-screen) overlay.
@@ -786,41 +808,56 @@ static void runAction(ActionId a) {
     Serial.printf("[action] dispatch %d\n", (int)a);
     switch (a) {
         case ACT_CAL_A:
-            httpKick(String("http://") + camA.ip + "/calibrate");
+        case ACT_CAL_B: {
             // Raise the overlay immediately for instant feedback. The
-            // poll loop will pick up cam.state=1 within 1 s, but the
+            // poll loop will pick up cam.state within 1 s, but the
             // operator shouldn't have to wait that long to know their
             // tap registered. We also snapshot the cam's current calMsg
             // so early-fail detection only fires on a *new* FAILED
             // message — otherwise a stale FAILED from the previous run
             // would flip us into RESULT_FAIL on frame 1.
-            calOverlay.side          = 0;
-            calOverlay.phase         = 0;
-            calOverlay.trackedState  = camA.state;
-            calOverlay.resultUntilMs = 0;
-            calOverlay.startedMs     = millis();
+            //
+            // The actual sequence now (autotune-chain.md):
+            //   - If <60 s since the last successful autotune for this
+            //     side, skip /autotune and go straight to /calibrate.
+            //     The cam's exposure is still good for the same lighting.
+            //   - Otherwise fire /stop (forces cam to IDLE — the cam's
+            //     requestAutotune() silently drops if state != IDLE) and
+            //     then /autotune. updateCalOverlay() advances the
+            //     sub-phase to CAL on autoDone=1 and kicks /calibrate
+            //     itself.
+            int8_t side = (a == ACT_CAL_A) ? 0 : 1;
+            CamState& cam = (side == 0) ? camA : camB;
+            uint32_t now = millis();
+            bool recentlyTuned =
+                (lastAutotuneMs[side] != 0) &&
+                ((now - lastAutotuneMs[side]) < AUTOTUNE_SKIP_WINDOW_MS);
+
+            calOverlay.side             = side;
+            calOverlay.phase            = 0;
+            calOverlay.subPhase         = recentlyTuned ? 1 : 0;  // 0=TUNING 1=CAL
+            calOverlay.trackedState     = cam.state;
+            calOverlay.resultUntilMs    = 0;
+            calOverlay.startedMs        = now;
+            calOverlay.subPhaseStartMs  = now;
             for (size_t k = 0; k < sizeof(calOverlay.msgAtRaise); k++)
-                calOverlay.msgAtRaise[k] = camA.calMsg[k];
-            dirtyOverlay             = true;
-            // Immediately request the previous attempt's cal-snapshot so
-            // the user has something to look at while this attempt runs.
-            // A second fetch fires when the cam finishes (state-machine
-            // result path), so the preview ends up matching the new
-            // attempt's frame within ~1.5 s of the tap.
-            requestCalSnapshot(camA.ip);
+                calOverlay.msgAtRaise[k] = cam.calMsg[k];
+            dirtyOverlay = true;
+
+            if (recentlyTuned) {
+                Serial.printf("[chain] side %d: skip autotune (last %u ms ago)\n",
+                              side, (unsigned)(now - lastAutotuneMs[side]));
+                httpKick(String("http://") + cam.ip + "/calibrate");
+            } else {
+                Serial.printf("[chain] side %d: autotune → calibrate\n", side);
+                // /stop forces the cam to IDLE so requestAutotune() can't
+                // be dropped silently. Cheap regardless of current state.
+                httpKick(String("http://") + cam.ip + "/stop");
+                httpKick(String("http://") + cam.ip + "/autotune");
+            }
+            requestCalSnapshot(cam.ip);
             break;
-        case ACT_CAL_B:
-            httpKick(String("http://") + camB.ip + "/calibrate");
-            calOverlay.side          = 1;
-            calOverlay.phase         = 0;
-            calOverlay.trackedState  = camB.state;
-            calOverlay.resultUntilMs = 0;
-            calOverlay.startedMs     = millis();
-            for (size_t k = 0; k < sizeof(calOverlay.msgAtRaise); k++)
-                calOverlay.msgAtRaise[k] = camB.calMsg[k];
-            dirtyOverlay             = true;
-            requestCalSnapshot(camB.ip);
-            break;
+        }
         case ACT_CAL_CANCEL: {
             // Send /reset to the cam so it leaves CALIBRATING immediately,
             // then collapse the overlay. The next poll will see state=0
@@ -998,6 +1035,7 @@ static void drawCalOverlay() {
     CalOverlay ov;
     ov.side          = calOverlay.side;
     ov.phase         = calOverlay.phase;
+    ov.subPhase      = calOverlay.subPhase;
     ov.resultUntilMs = calOverlay.resultUntilMs;
     ov.trackedState  = calOverlay.trackedState;
     if (ov.side < 0) return;
@@ -1023,12 +1061,16 @@ static void drawCalOverlay() {
     }
 
     // Title row at the top — text size 3 to leave room for the
-    // 320×240 snapshot preview below it.
+    // 320×240 snapshot preview below it. The TUNING sub-phase uses
+    // a distinct title so the operator knows the autotune sweep is
+    // running (vs the regular edge-detect calibration).
     char title[64];
     if (ov.phase == 1) {
         snprintf(title, sizeof(title), "Calibrado %s", sideLabel);
     } else if (ov.phase == 2) {
         snprintf(title, sizeof(title), "Falhou %s", sideLabel);
+    } else if (ov.subPhase == 0) {
+        snprintf(title, sizeof(title), "Auto-ajuste %s", sideLabel);
     } else {
         snprintf(title, sizeof(title), "Calibrando %s", sideLabel);
     }
@@ -1076,8 +1118,50 @@ static void drawCalOverlay() {
     }
     lastPaintedSide = ov.side;
 
-    if (ov.phase == 0) {
-        // RUNNING phase: live calMsg + progress bar below the preview.
+    if (ov.phase == 0 && ov.subPhase == 0) {
+        // TUNING sub-phase: show the cam's live calMsg (cam updates it
+        // per sweep step) + a "passo X/Y" counter + a fine-grained
+        // progress bar driven by autoStep / autoTotal.
+        const char* tunDefault = "Detectando melhor exposicao";
+        char msg[64];
+        snprintf(msg, sizeof(msg), "%s", c.calMsg[0] ? c.calMsg : tunDefault);
+        gfx->setTextSize(2);
+        gfx->setTextColor(OVL_BLUE2, OVL_BG);
+        int mw = (int)strlen(msg) * 12;
+        if (mw > 780) mw = 780;
+        gfx->setCursor((800 - mw) / 2, 320);
+        gfx->print(msg);
+
+        // Step counter — only show if cam has reported a non-zero
+        // total (i.e., sweep has actually started).
+        if (c.autoTotal > 0) {
+            char counter[24];
+            snprintf(counter, sizeof(counter), "passo %d/%d",
+                     c.autoStep, c.autoTotal);
+            gfx->setTextSize(2);
+            gfx->setTextColor(OVL_BLUE, OVL_BG);
+            int cw = (int)strlen(counter) * 12;
+            gfx->setCursor((800 - cw) / 2, 350);
+            gfx->print(counter);
+        }
+
+        // Progress bar (fine: percentage of sweep complete).
+        int barX = 150, barY = 380, barW = 500, barH = 22;
+        gfx->drawRect(barX, barY, barW, barH, OVL_BLUE);
+        gfx->drawRect(barX + 1, barY + 1, barW - 2, barH - 2, OVL_BLUE);
+        int fill = 0;
+        if (c.autoTotal > 0) {
+            fill = (c.autoStep * 100) / c.autoTotal;
+            if (fill > 100) fill = 100;
+        }
+        if (fill > 0) {
+            int fw = (barW - 4) * fill / 100;
+            gfx->fillRect(barX + 2, barY + 2, fw, barH - 4, OVL_BLUE2);
+        }
+    } else if (ov.phase == 0) {
+        // CAL sub-phase: live calMsg + the original coarse 3-stop
+        // progress bar (hasCalSnap, calContrast). Unchanged from
+        // pre-chain behaviour.
         char msg[64];
         snprintf(msg, sizeof(msg), "%s",
                  c.calMsg[0] ? c.calMsg : "Coloque o dadinho dentro do gol");
@@ -1088,7 +1172,6 @@ static void drawCalOverlay() {
         gfx->setCursor((800 - mw) / 2, 320);
         gfx->print(msg);
 
-        // Progress bar.
         int barX = 150, barY = 360, barW = 500, barH = 22;
         gfx->drawRect(barX, barY, barW, barH, OVL_BLUE);
         gfx->drawRect(barX + 1, barY + 1, barW - 2, barH - 2, OVL_BLUE);
@@ -1146,9 +1229,54 @@ static void updateCalOverlay() {
     CamState& c = (calOverlay.side == 0) ? camA : camB;
 
     if (calOverlay.phase == 0) {
-        // RUNNING — watch for cam leaving the CALIBRATING state. The
-        // tracked-state field lets us detect the exact 1→0 edge even if
-        // the poll loop missed a frame.
+        // RUNNING. The sub-phase splits this further: 0=TUNING (cam
+        // running /autotune) and 1=CAL (cam running /calibrate). The
+        // tracked-state field lets us detect the exact state-machine
+        // edges even if the poll loop missed a frame.
+
+        // --- TUNING → CAL transition ---
+        // When the cam's autotune sweep completes (autoDone flips 1
+        // and state returns to IDLE), fire /calibrate ourselves and
+        // advance the sub-phase. Record the timestamp so a subsequent
+        // CAL tap within AUTOTUNE_SKIP_WINDOW_MS skips the autotune.
+        if (calOverlay.subPhase == 0 && c.autoDone > 0) {
+            int side = calOverlay.side;
+            lastAutotuneMs[side] = millis();
+            calOverlay.subPhase  = 1;
+            calOverlay.subPhaseStartMs = millis();
+            // Snapshot the cam's calMsg afresh — the early-fail check
+            // for the CAL sub-phase compares against this baseline, so
+            // we need to clear it of the autotune's done-message before
+            // /calibrate starts producing its own.
+            for (size_t k = 0; k < sizeof(calOverlay.msgAtRaise); k++)
+                calOverlay.msgAtRaise[k] = c.calMsg[k];
+            calOverlay.trackedState = (int8_t)c.state;
+            httpKick(String("http://") + c.ip + "/calibrate");
+            requestCalSnapshot(c.ip);
+            dirtyOverlay = true;
+            return;
+        }
+
+        // --- Autotune watchdog ---
+        // If we've been in TUNING for >20 s without seeing autoDone,
+        // bail to RESULT_FAIL. Covers WiFi blips and the rare case
+        // where the cam's sweep stalls. The fail card shows the cam's
+        // last calMsg so the user has SOMETHING to look at.
+        if (calOverlay.subPhase == 0 &&
+            (millis() - calOverlay.subPhaseStartMs) >= AUTOTUNE_WATCHDOG_MS) {
+            calOverlay.phase         = 2;
+            calOverlay.resultUntilMs = millis() + 6000;
+            dirtyOverlay             = true;
+            requestCalSnapshot(c.ip);
+            Serial.println("[chain] autotune watchdog tripped → RESULT_FAIL");
+            return;
+        }
+
+        // The transitions below only apply to the CAL sub-phase. While
+        // we're still TUNING, just leave the overlay in the autotune
+        // progress view.
+        if (calOverlay.subPhase != 1) return;
+
         int8_t prev = calOverlay.trackedState;
         calOverlay.trackedState = (int8_t)c.state;
         if (prev == 1 && c.state != 1) {
@@ -1375,6 +1503,7 @@ static void pollCam(CamState& c) {
     bool cal = c.calibrated;
     int motTh = c.motionTh, colTh = c.colorTh, calCtr = c.calContrast;
     bool hasSnap = c.hasCalSnap;
+    int aStep = c.autoStep, aTotal = c.autoTotal, aDone = c.autoDone;
     char prevMsg[sizeof(c.calMsg)];
     memcpy(prevMsg, c.calMsg, sizeof(prevMsg));
 
@@ -1385,14 +1514,25 @@ static void pollCam(CamState& c) {
     extractIntField(body, "colorTh", &colTh);
     extractIntField(body, "calContrast", &calCtr);
     extractBoolField(body, "hasCalSnap", &hasSnap);
+    extractIntField(body, "autoStep",  &aStep);
+    extractIntField(body, "autoTotal", &aTotal);
+    extractIntField(body, "autoDone",  &aDone);
     extractStringField(body, "calMsg", c.calMsg, sizeof(c.calMsg));
 
     bool changed = !c.online || st != c.state || cal != c.calibrated;
+    // Sweep-progress change also forces an overlay redraw so the
+    // "passo X/Y" counter + progress bar advance smoothly during the
+    // TUNING sub-phase. Without this the overlay would only redraw on
+    // calMsg changes (cam updates calFeedback per sweep step too, but
+    // the explicit autoStep tick is more reliable).
+    bool autoChanged = (aStep != c.autoStep) || (aTotal != c.autoTotal) ||
+                       (aDone != c.autoDone);
     bool msgChanged = (memcmp(prevMsg, c.calMsg, sizeof(prevMsg)) != 0);
     c.online = true;
     c.state = st; c.calibrated = cal; c.goals = goals;
     c.motionTh = motTh; c.colorTh = colTh; c.calContrast = calCtr;
     c.hasCalSnap = hasSnap;
+    c.autoStep = aStep; c.autoTotal = aTotal; c.autoDone = aDone;
     if (changed) {
         dirtyStatus = true;
         dirtyButtons = true;  // START/PAUSE label tracks cam state (index 5)
@@ -1400,7 +1540,7 @@ static void pollCam(CamState& c) {
     // The calibration overlay re-renders every time the cam's text or
     // progress markers move forward, even within a single state. This
     // is the only path that drives the overlay's live feedback.
-    if (changed || msgChanged) dirtyOverlay = true;
+    if (changed || msgChanged || autoChanged) dirtyOverlay = true;
 }
 
 // Background worker on core 0. Drains queued UI actions, services the
