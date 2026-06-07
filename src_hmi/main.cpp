@@ -486,29 +486,38 @@ struct Button {
     uint16_t fillPressed;
     ActionId action;
 };
-// Single-row footer ribbon at y=350-460. All buttons share black fill
-// so they sit flat against the black background; the fillPressed color
-// becomes the "intent" colour (red / green / amber) so the original
-// hierarchy survives — operator sees the colour only on tap. Border
-// is the same intent colour so the buttons stay visually distinct at
-// rest.
+// Reorganised control row: vertical +/− steppers on each edge (HOME
+// left, AWAY right), three match-control buttons in the centre with
+// START as the visually dominant primary action (filled green vs the
+// others' outlined treatment).
 //
-// Indexes used by the dirty-flag handler (STARTPAUSE_BUTTON_IDX
-// repaints just the START key when its label flips on cam state):
-//   0=A-  1=A+  2=CAL A  3=START  4=RESET  5=CAL B  6=B-  7=B+
+//  ┌──┐ ┌────┐ ┌──────┐ ┌────┐ ┌────┐ ┌──┐
+//  │+ │ │CAL │ │START │ │RST │ │CAL │ │+ │
+//  ├──┤ │ A  │ │      │ │    │ │ B  │ ├──┤
+//  │− │ └────┘ └──────┘ └────┘ └────┘ │− │
+//  └──┘                               └──┘
+//
+// Indexes (STARTPAUSE_BUTTON_IDX repaints just START when label flips):
+//   0=A+  1=A-  2=CAL A  3=START  4=RESET  5=CAL B  6=B+  7=B-
+//
+// Stepper buttons are 70w × 50h, stacked at y=355 (top) and y=410
+// (bottom) with a 5 px gap. Match controls fill the full 105 px height.
 static Button buttons[] = {
-    {  10, 350,  55, 110, "-",     0x0000, 0xF800, ACT_A_MINUS },    // red intent
-    {  70, 350,  55, 110, "+",     0x0000, 0x07E0, ACT_A_PLUS  },    // green intent
-    { 130, 350, 120, 110, "CAL A", 0x0000, 0xFD20, ACT_CAL_A   },    // amber intent
-    { 255, 350, 165, 110, "START", 0x0000, 0x07E0, ACT_START_PAUSE }, // green intent
-    { 425, 350, 120, 110, "RESET", 0x0000, 0xF800, ACT_RESET_ALL },  // red intent
-    { 550, 350, 120, 110, "CAL B", 0x0000, 0xFD20, ACT_CAL_B   },    // amber intent
-    { 675, 350,  55, 110, "-",     0x0000, 0xF800, ACT_B_MINUS },    // red intent
-    { 735, 350,  55, 110, "+",     0x0000, 0x07E0, ACT_B_PLUS  },    // green intent
+    // HOME stepper (left edge)
+    {  10, 355, 70, 50, "+",     0x0000, 0x07E0, ACT_A_PLUS  },
+    {  10, 410, 70, 50, "-",     0x0000, 0xF800, ACT_A_MINUS },
+    // Match controls (center)
+    { 100, 355, 120, 105, "CAL A", 0x0000, 0xFD20, ACT_CAL_A   },
+    { 235, 355, 200, 105, "START", 0x07E0, 0x0640, ACT_START_PAUSE },  // PRIMARY: filled green
+    { 450, 355, 120, 105, "RESET", 0x0000, 0xF800, ACT_RESET_ALL },
+    { 585, 355, 120, 105, "CAL B", 0x0000, 0xFD20, ACT_CAL_B   },
+    // AWAY stepper (right edge)
+    { 720, 355, 70, 50, "+",     0x0000, 0x07E0, ACT_B_PLUS  },
+    { 720, 410, 70, 50, "-",     0x0000, 0xF800, ACT_B_MINUS },
 };
 constexpr int NUM_BUTTONS = sizeof(buttons) / sizeof(buttons[0]);
 static int pressedButton = -1;     // index of currently pressed button (-1 none)
-constexpr int STARTPAUSE_BUTTON_IDX = 3;
+constexpr int STARTPAUSE_BUTTON_IDX = 3;  // moved with the reorganization above
 
 // Modern card-based palette modelled on the user's reference image
 // (a 2014 FIFA ARG vs GER scoreboard widget). See
@@ -1175,12 +1184,27 @@ static void drawStatusPill(int side) {
 static void drawButton(int idx) {
     const Button& b = buttons[idx];
     bool pressed = (idx == pressedButton);
-    uint16_t fill   = pressed ? b.fillPressed : b.fill;        // black at rest
-    uint16_t border = pressed ? COL_WHITE     : b.fillPressed; // intent colour at rest
-    int r = (b.w < 80) ? 16 : 20;
+    // "Primary" = button whose rest fill is NOT black. START is the
+    // only primary in the current layout (filled green so it draws the
+    // eye); everything else is outlined (black fill, intent border).
+    bool primary = (b.fill != COL_BLACK);
+
+    uint16_t fill, border;
+    if (primary) {
+        fill   = pressed ? b.fillPressed : b.fill;
+        border = COL_WHITE;
+    } else {
+        fill   = pressed ? b.fillPressed : COL_BLACK;
+        border = b.fillPressed;       // intent colour as border at rest
+    }
+    int r = (b.w < 90) ? 14 : 18;
     gfx->fillRoundRect(b.x, b.y, b.w, b.h, r, fill);
     gfx->drawRoundRect(b.x, b.y, b.w, b.h, r, border);
-    gfx->drawRoundRect(b.x+1, b.y+1, b.w-2, b.h-2, r, border);  // 2 px border for emphasis
+    if (!primary) {
+        // 2-px border on outlined buttons so the intent colour reads
+        // even with small inner labels.
+        gfx->drawRoundRect(b.x+1, b.y+1, b.w-2, b.h-2, r, border);
+    }
 
     // Label — for START button, swap to PAUSE / RESUME based on cam state.
     const char* label = b.label;
@@ -1190,14 +1214,19 @@ static void drawButton(int idx) {
         label = anyPlaying ? "PAUSE" : (anyPaused ? "RESUME" : "START");
     }
 
-    // One tier smaller than before: narrow score-adjusters use size 3
-    // (was 4), wider buttons use size 2 (was 3). The +/- glyphs at
-    // size 3 are still chunky enough to read from across the room.
-    int textSize = (b.w < 80) ? 3 : 2;
+    // Typography: primary buttons (START) get size 3 so they're the
+    // visual anchor of the row. Outlined match controls get size 2,
+    // and the small stepper buttons get size 3 since they're just a
+    // single glyph and need to read from across the room.
+    int textSize;
+    if (primary)              textSize = 3;
+    else if (b.w < 90)        textSize = 3;
+    else                      textSize = 2;
     int glyphW   = (textSize == 3) ? 18 : 12;
     int glyphH   = (textSize == 3) ? 24 : 16;
     int textW    = (int)strlen(label) * glyphW;
-    uint16_t textCol = pressed ? COL_BLACK : COL_WHITE;
+    uint16_t textCol = COL_WHITE;
+    if (!primary && pressed) textCol = COL_BLACK;  // outlined → fill becomes intent on tap
     gfx->setTextSize(textSize);
     gfx->setTextColor(textCol, fill);
     gfx->setCursor(b.x + (b.w - textW) / 2, b.y + (b.h - glyphH) / 2);
