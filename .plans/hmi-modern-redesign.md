@@ -2,14 +2,22 @@
 
 **Date:** 2026-06-07
 **User prompt:** *"use frontend design skills to redesign the interface
-into a modern sports app"*
+into a modern sports app"* — then, after a first attempt was
+rejected: *"this modern scoreboard show the timer, which we dont have,
+but we need to add to the plan."* with a screenshot of a 2014 FIFA
+World Cup ARG vs GER scoreboard widget as reference.
 
 The current placar UI is functional but reads as a debug surface: a
 flat black background, big bitmap digits, eight pill buttons arranged
-in two rows. This plan rebuilds the main view as a broadcast-style
-scoreboard with team identity, status badges, a hierarchy of
-typography, and a control ribbon — the kind of look a sports app
-(ESPN, FotMob, FIFA Companion) would ship.
+in two rows. This plan rebuilds the main view as a **compact, card-
+based scoreboard** modelled on the user's reference: pill-shaped
+container with a circular minute-timer at the centre, score-on-dark
+rectangles per team, status row of controls underneath.
+
+**First attempt (rejected):** the Brasileirão palette + full-screen
+split-card layout was a different direction from what the user wanted
+(see git stash @{0} for the implementation). Keep the failed attempt
+around as a colour-palette reference but discard the layout.
 
 The calibration overlay is intentionally **out of scope** for this
 plan — it was just redesigned (white panel + cam-snapshot preview)
@@ -37,183 +45,211 @@ and its own redesign would land in a phase 2.
 └──────────────────────────────────────────────────────────────┘
 ```
 
-### Target (broadcast-style two-team layout)
+### Target (inspiration-driven card scoreboard)
+
+Modelled directly on the user's reference image — a pill-shaped main
+scoreboard with a circular timer at the centre, score-on-dark
+rectangles for each team. On our 800×480 canvas we have room for the
+scoreboard pill on top AND a second pill or row underneath for the
+control surface.
+
 ```
-┌──────────────────────────────────────────────────────────────┐
-│ ⚽ gol-cam · futebol de botão              ● LIVE  · 03:24   │   60 px header
-├──────────────────────────────────┬───────────────────────────┤
-│                                  │                           │
-│   HOME                           │                AWAY       │
-│                                  │                           │
-│      ┌─────────────┐             │   ┌─────────────┐         │   team cards
-│      │             │             │   │             │         │   330 px tall
-│      │      0      │             │   │      0      │         │
-│      │             │             │   │             │         │
-│      └─────────────┘             │   └─────────────┘         │
-│                                  │                           │
-│   ●  READY                       │   ●  READY                │
-│   cam @ 192.168.40.90            │   cam @ 192.168.40.91     │
-│                                  │                           │
-├──────────────────────────────────┴───────────────────────────┤
-│  ─  +    CAL A    ▶ START    ⟲ RESET    CAL B    ─  +        │   90 px footer
-└──────────────────────────────────────────────────────────────┘
+        ┌─────────────────────────────────────────────┐
+        │                                             │
+        │  ╔══╗         ╭─────╮          ╔══════════╗ │
+        │  ║●●║         │ 12' │   HOME ◆ ║    0     ║ │
+        │  ║●●║         │ 45" │          ╚══════════╝ │   ← scoreboard pill
+        │  ╚══╝         ╰─────╯          ╔══════════╗ │      y=30..200 (h=170)
+        │                                ║   AWAY   ║ │
+        │  app icon     timer ring  AWAY ◆ ║    0     ║ │
+        │  / logo                          ╚══════════╝ │
+        │                                             │
+        └─────────────────────────────────────────────┘
+
+        ┌────────────────────┐  ┌──────────────────────┐
+        │  ● HOME READY      │  │  ● AWAY READY        │  ← status pills
+        │  cam @ .40.90      │  │  cam @ .40.91        │      y=220..300
+        └────────────────────┘  └──────────────────────┘
+
+   ┌──┐ ┌──┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌──┐ ┌──┐
+   │− │ │+ │ │ CAL A  │ │ ▶ START│ │ RESET  │ │ CAL B  │ │− │ │+ │   ← controls
+   └──┘ └──┘ └────────┘ └────────┘ └────────┘ └────────┘ └──┘ └──┘      y=330..460
+   A    A                                                  B    B
 ```
 
-Net visual changes:
-- **Header band** with a small app icon, project subtitle, live-state
-  badge (replaces the single PLACAR pill).
-- **Two team cards** with distinct background tints, MASSIVE score
-  digits (size 14 instead of 12), team labels in caps above, status
-  dot + cam IP below. Cards have rounded corners and a subtle
-  border.
-- **Match-state divider** ("VS" or just the colon-separator) between
-  the cards. Tiny match-timer placeholder (`03:24`) in the header.
-- **Single-row footer ribbon** for ALL controls (today there are
-  two rows). Score adjusters become smaller "− / +" icons hugging
-  each team's edge of the ribbon; CAL / START / RESET sit in the
-  middle, more prominent.
-- **Status pills** become badges: a coloured dot + label + cam IP,
-  inside each team card. The HOME/AWAY headings move into the card
-  itself.
+Net visual changes from today:
+- **Pill-shaped scoreboard** instead of a flat header + huge digits.
+  Rounded ~25–30 px corners. Cream/off-white background mimicking the
+  reference. Sits at the top of the screen as the dominant element.
+- **Circular minute-timer** (~140 px diameter) centred in the pill.
+  Shows `M' SS"` (minute and seconds since START tap). A ring around
+  the disc fills in as the timer advances — emerald arc on the right
+  side per the reference. **This is new — we have no timer today.**
+- **Score-on-dark blocks** per team. Each team gets a horizontal row
+  with: team label ("HOME" / "AWAY") + small colored "flag" disc
+  (no national flags — just a coloured pill to identify the side) +
+  a dark rectangle holding the score in large white digits. Matches
+  the reference's "ARG 🏳️ 3" / "GER 🏳️ 1" stacked rows.
+- **Separate status pills** for each team below the scoreboard,
+  showing cam-state dot + label + cam IP. Replaces the in-card
+  status row from the rejected attempt.
+- **Control row** of pill-shaped buttons at the bottom — same 8
+  controls as today (A−/A+, CAL A, START, RESET, CAL B, B−/B+) but
+  styled as discrete pills rather than a ribbon.
 
 ---
 
-## 2. Color palette — pick one
+## 2. Color palette — match the reference
 
-Three directions, all RGB565-safe on the panel. Render the score
-digits in white on coloured card backgrounds for max readability
-across the room.
+Pulled directly from the user's reference image. RGB565-safe.
 
-### Option A — "Stadium night"
-- Background: `0x0841` very dark navy
-- Header strip: `0x18C3` slate
-- HOME card: `0x044D` teal-blue
-- AWAY card: `0xC183` deep amber
-- Score digits / labels: `0xFFFF` white
-- Accent (LIVE pill, action buttons): `0x07E0` green
-- Destructive (RESET, − minus): `0xC000` brick red
-- *Reads like a night-game broadcast. Best contrast on the panel.*
-
-### Option B — "Brasileirão" *(my recommendation)*
-- Background: `0x0260` deep green felt (nod to button-soccer's
-  fabric tables)
-- Header: `0x0481` slightly lighter green
-- HOME card: `0x041F` cobalt blue
-- AWAY card: `0xFE60` warm yellow (digits in black on this card
-  for contrast)
-- Score (HOME): white
-- Score (AWAY): black
-- Accent: `0xFFFF` white
-- Destructive: `0xF800` red
-- *Direct nod to the Brazilian flag + classic green table. Most
-  on-brand for a futebol-de-botão device.*
-
-### Option C — "Modern minimal"
-- Background: `0x10A2` charcoal
-- Header: `0x18C3` slate
-- HOME + AWAY cards both: `0xFFFF` white with thin colored border
-  (HOME blue, AWAY orange)
-- Score: HOME blue / AWAY orange digits ON the white cards
-- Accent: `0x07E0` green for primary buttons
-- Destructive: `0xF800` red
-- *Cleanest, closest to a modern desktop sports app. Less
-  "celebrate the sport" energy than A or B.*
+- Page background: `0x0500` deep green field (kept from the Brasileirão
+  attempt — it complements the cream pills well, same as the
+  reference's blurry green stadium backdrop).
+- Pill background (scoreboard, status pills, control buttons):
+  `0xEF7D` warm cream (slight yellowish tint, soft).
+- Score-block background (the dark rectangle holding each digit):
+  `0x2104` near-black charcoal.
+- Score digits: `0xFFFF` white.
+- Team label text on pill: `0x4208` dark slate.
+- Timer numerals: `0x2104` near-black.
+- Timer ring (progress arc): `0x07E2` emerald green; track:
+  `0xC638` light grey.
+- Status dots: same as today (green READY, orange CAL, yellow PAUSE,
+  red OFFLINE, grey IDLE).
+- Action button (START): green `0x0640` bg + white text.
+- Destructive button (RESET, `−`): red `0xC000` bg + white text.
+- CAL buttons: amber `0xFD20` bg + black text.
+- Score-adjust `+`: green; `−`: red. Both narrow.
 
 ---
 
 ## 3. Typography hierarchy
 
 Arduino_GFX scales by integer multiples of its bitmap font (~6×8
-base glyph). Available size tiers in use today: 2 (12×16), 3
-(18×24), 4 (24×32). Cleaner if we use these consistently:
+base glyph). Available size tiers: 2 (12×16), 3 (18×24), 4 (24×32),
+5 (30×40), 6 (36×48), 8 (48×64).
 
 | Element | Size | Pixels per glyph |
 |---|---|---|
-| Score digits | 14 | 84×112 (target: 1 wide-digit ~84 px, 2 wide ~168 px). Matches today's "0 x 0". |
-| Team label ("HOME", "AWAY") | 4 | 24×32 |
-| Header title ("gol-cam · futebol de botão") | 2 | 12×16 |
-| Status badge ("READY", "OFFLINE") | 3 | 18×24 |
+| Score digit (in dark block) | 6 | 36×48 — single digit fits in a 70 px wide block |
+| Timer minutes ("12'") | 6 | 36×48 |
+| Timer seconds ("45\"") | 3 | 18×24 — sits below the minute number, smaller |
+| Team label ("HOME", "AWAY") | 3 | 18×24 |
+| Status badge ("READY", "OFFLINE") | 2 | 12×16 |
 | Cam IP / metadata | 2 | 12×16 |
-| Button labels | 3 | 18×24 |
+| Button label | 3 | 18×24 |
+| Score-adjuster `+ / −` | 4 | 24×32 (big enough to read) |
 
 ---
 
 ## 4. Component spec
 
-### Header strip (60 px, y=0–60)
-- Background: header color from palette.
-- Left: small `⚽` glyph (could be a fillCircle + drawTriangle for a
-  cheap ball icon) + "gol-cam · futebol de botão" in size 2.
-- Right: live-state badge = filled rounded rect, ~140 px wide, with
-  `●` indicator dot + state text (`LIVE` / `IDLE` / `PAUSE` /
-  `OFFLINE`). State derived from `camA.state` and `camB.state`
-  the same way the current "STARTPAUSE" label is.
+### Scoreboard pill (y=20–200, x=40–760, w=720, h=180, r=30)
+- `fillRoundRect` cream background, white border 2 px.
+- Internal layout (left to right):
+  - **App badge** (~x=70, y=100, r=50): green-felt circle with
+    a tiny soccer-ball glyph (overlapping fillCircles drawn in
+    a pentagon-ish pattern — cheap stylization). Replaces the
+    reference's FIFA World Cup logo.
+  - **Timer disc** (~x=300, y=110, r=70): white circle with
+    minute number ("12'") in size-6 black, seconds ("45\"") in
+    size-3 grey underneath. Outside the circle, a partial ring
+    (drawn via many short arcs) shows progress through the
+    notional half (full ring at 45'). Track grey, progress
+    emerald.
+  - **Score column** (x=470 to 720): two stacked rows.
+    - Row 1 (y=45..115): `HOME ● ║ 3 ║` — label size 3 black,
+      colored disc (HOME = cobalt), then a dark rectangle
+      (x=600..720, h=70) with white size-6 digit centred.
+    - Row 2 (y=125..195): `AWAY ● ║ 1 ║` — same layout, AWAY
+      colored disc (yellow).
 
-### Team cards (330 px tall, y=70–400; left card x=10–390, right card x=410–790)
-- Background: card color from palette (HOME / AWAY).
-- 14 px rounded corners (`fillRoundRect`).
-- Vertical centerline at x=400 with a thin divider strip
-  (10 px wide).
-- Inside each card:
-  - Team label ("HOME" / "AWAY") centred, size 4, top of card
-    (y=90).
-  - Score digit centred, size 14, ~y=140 (huge centerpiece).
-  - Status row at bottom (y=340): `●` dot in status color (green
-    READY, orange CAL, yellow PAUSE, red OFFLINE, grey IDLE) +
-    status text size 3 + cam IP size 2 below.
+### Match timer state (NEW)
+- Tracked in three new globals: `uint32_t matchStartMs`,
+  `uint32_t matchPausedAccumMs`, `enum MatchState
+  {MS_IDLE, MS_PLAYING, MS_PAUSED}`.
+- Behaviour:
+  - `MS_IDLE`: display "00' 00\""; ring empty.
+  - START tap → `matchStartMs = millis()`, state = MS_PLAYING.
+  - PAUSE tap → `matchPausedAccumMs += millis() - matchStartMs`,
+    state = MS_PAUSED.
+  - RESUME tap → `matchStartMs = millis()`, state = MS_PLAYING
+    (the previous elapsed time lives in `matchPausedAccumMs`).
+  - RESET tap → `matchPausedAccumMs = 0`, state = MS_IDLE.
+  - Display: `elapsedMs = (state == MS_PLAYING)
+      ? (millis() - matchStartMs + matchPausedAccumMs)
+      : matchPausedAccumMs;`
+- Timer redraw runs on a dirty flag set when (a) state changes or
+  (b) the displayed minute or second value advances. A 500 ms loop
+  poll on the timer is plenty.
+- The cams' state is independent of `MatchState`; the timer is
+  HMI-local.
 
-### Footer ribbon (60 px, y=410–470)
-- Background: header color from palette.
-- Eight buttons in a SINGLE row instead of two:
-  - `A −` `A +` at far left (each 60 px wide).
-  - `CAL A` (110 px) next.
-  - `▶ START` (130 px, with the unicode play-glyph rendered as a
-    drawn triangle since the GFX font likely can't print U+25B6).
-  - `⟲ RESET` (110 px, glyph rendered as an arc).
-  - `CAL B` (110 px).
-  - `B −` `B +` at far right (60 px each).
-- Total width budget: 60+60+110+130+110+110+60+60 = 700 px + 7
-  gaps × ~13 px = 791 px. Tight; tune to 600 px row centred at
-  x=400 with 100 px margins on each side.
+### Status pills (y=220–300, two side-by-side)
+- Left pill: HOME, x=40..390 (w=350, h=70, r=20).
+  Inside: `● READY` size 3 + cam IP size 2 below.
+- Right pill: AWAY, x=410..760.
+- Same cream pill style as the scoreboard.
+
+### Control row (y=330–460, h=130)
+- Eight pill buttons, single row, similar widths to the
+  rejected-attempt's footer ribbon:
+  - `−` (A score down): x=10, w=60, h=110, r=20, red bg
+  - `+` (A score up): x=80, w=60, red bg
+  - `CAL A`: x=160, w=130, amber bg, black text
+  - `▶ START`: x=300, w=160, green bg, white text (label flips
+    to `⏸ PAUSE` / `▶ RESUME` per cam state, same as today)
+  - `⟲ RESET`: x=470, w=130, red bg, white text
+  - `CAL B`: x=610, w=130, amber bg, black text
+  - `−`: x=750, w=60... actually we run out of width here. Tune
+    spacing — likely shrink the inner buttons to 110 px or move
+    score adjusters to the very edges with smaller widths.
 
 ### Touch hit-test
-- Score adjusters become smaller targets (60 px wide × 50 px tall).
-  Still well above the GT911's effective resolution.
-- CAL buttons stay 110 px wide (current 170) — slightly smaller but
-  still comfortable.
+- Score adjusters become 60 px wide × 110 px tall. Still well
+  above the GT911's effective resolution.
+- CAL buttons at 130 px wide — comfortably tappable.
 
 ---
 
 ## 5. Implementation breakdown
 
-All work in `src_hmi/main.cpp`. Estimated ~500 LOC churn.
+All work in `src_hmi/main.cpp`. Estimated ~600 LOC churn (more than
+the rejected attempt because of the timer state machine + circular
+timer rendering).
 
-1. **Add palette constants** at the top of the colors block (~`src_hmi/main.cpp:430`):
-   - Define `COL_BG_HEADER`, `COL_CARD_HOME`, `COL_CARD_AWAY`,
-     `COL_SCORE_HOME`, `COL_SCORE_AWAY`, `COL_ACCENT`,
-     `COL_DESTRUCTIVE`, `COL_LIVE`, `COL_OFFLINE_DOT`,
-     `COL_READY_DOT`, `COL_IDLE_DOT`, `COL_CAL_DOT`.
-   - Pick from the chosen palette option.
-2. **Replace `drawHeader()`** with the new strip layout (ball glyph,
-   subtitle, live-state badge).
-3. **Replace `drawScoreDigits()`** with `drawTeamCards()` that draws
-   both cards in one pass (or two helpers `drawTeamCard(int side)`).
-   The score digit is now inside the card.
-4. **Replace `drawSideStatus()`** with the in-card status row (dot +
-   READY / OFFLINE / CAL / PAUSE / IDLE + cam IP).
-5. **Reshape the buttons array** (~`src_hmi/main.cpp:340`):
-   - Recalculate `x, y, w, h` for the single-row footer.
-   - Add `glyph` field to `Button` struct for the `▶` and `⟲`
-     symbols (rendered as primitives, not text).
-6. **Reroute `drawButton(idx)`** to handle the new sizes + the
-   optional glyph render.
-7. **Adjust `dirtyButtons` loop dispatcher**: today it only redraws
-   `drawButton(5)` (START) because that's the only label that
-   changes. With the new layout, the START button can change to
-   `▶ START` / `⏸ PAUSE` / `▶ RESUME`, but `drawButton(5)` still
-   covers it. No change here.
-8. **Touch hit-test sanity**: `hitTest(x, y)` already iterates the
-   `buttons[]` array, so the new positions just work.
+1. **Palette constants** (~`src_hmi/main.cpp:430`): cream pill bg,
+   charcoal score-block bg, slate text, emerald + grey ring colors.
+2. **Match-timer state machine** — three new globals
+   (`matchStartMs`, `matchPausedAccumMs`, `MatchState matchState`)
+   and a helper `matchElapsedMs()` that returns the live elapsed.
+   Wire `START`, `PAUSE`/`RESUME`, `RESET` action handlers to
+   transition this state. Add a `dirtyTimer` flag set every 500 ms
+   from `loop()` so the timer text refreshes once per second
+   without redrawing the whole pill.
+3. **Replace `drawHeader()`** → no longer needed; replaced by the
+   scoreboard pill which IS the top of the screen. Remove the
+   header-strip code path entirely.
+4. **New `drawScoreboardPill()`** — paints the cream pill, the app
+   badge circle, the timer disc with ring (helper
+   `drawTimerRing(cx, cy, r, progress01)`), and the two team rows
+   (label + flag-disc + dark score-block + white digit).
+5. **New `drawStatusPills()`** — two cream pills with status dot,
+   state label, cam IP. Replaces `drawSideStatus`.
+6. **Reshape the `buttons[]` array** to the new control-row
+   coordinates from §4.
+7. **`drawButton(idx)`** — keep mostly as-is. Use rounded-rect r=20
+   for the pill aesthetic. Already handles START label flip.
+8. **`renderFull()`** — clear bg, scoreboard pill, status pills,
+   buttons. Drop `drawHeader` + `drawScoreDigits` + `drawSideStatus`
+   from the rotation since they're folded into the new helpers.
+9. **Dirty-flag wiring** — `dirtyScore` triggers
+   `drawScoreboardPill` (score lives inside it). `dirtyTimer`
+   redraws ONLY the timer disc, not the whole pill (small
+   sub-region repaint).
+10. **Glyph helpers** — small drawn primitives for play triangle,
+    pause bars, reset spiral. ~30 LOC.
 
 ---
 
@@ -221,13 +257,14 @@ All work in `src_hmi/main.cpp`. Estimated ~500 LOC churn.
 
 | # | Criterion | How to verify |
 |---|---|---|
-| AC1 | Score digits are visibly larger than today and readable from across the room. | Manual eyeball test |
-| AC2 | Team identity is immediately clear (HOME and AWAY visually distinct). | Manual; covered by the card background tint |
-| AC3 | Live-state badge in the header shows LIVE / IDLE / PAUSE based on actual cam state. | Touch START, watch badge change |
-| AC4 | All 8 buttons fit in a single row of the footer and respond to taps. | Manual + tap each button |
-| AC5 | Calibration overlay still works (it's drawn on top of the new placar). | Tap CAL A → overlay appears as before |
-| AC6 | All 70 integration tests still pass (REST surface unchanged). | `python3 tests/integration/test_system.py` |
-| AC7 | HMI `/status` soak stays ≥ 80/90 (no regression from the pclk fix). | 90 s × 1 Hz triple-board soak |
+| AC1 | Scoreboard pill is the dominant element at the top, score digits visible from across the room. | Manual eyeball test |
+| AC2 | Timer counts up by seconds after tapping START; pauses on PAUSE; resumes on RESUME; resets on RESET. | Tap START, wait 5 s, tap PAUSE, verify display freezes; tap RESUME, verify resumes; tap RESET, verify back to `00' 00"`. |
+| AC3 | Timer ring fills visibly as the timer advances (track grey, fill emerald). | Manual; check both the disc and the ring update. |
+| AC4 | HOME / AWAY status pills show correct state (READY / IDLE / CAL / PAUSE / OFFLINE) per cam. | Manual + power-cycle a cam to see the state changes. |
+| AC5 | All 8 control buttons fit in the row and respond to taps. | Manual + tap each button. |
+| AC6 | Calibration overlay still works (it's drawn on top of the new placar). | Tap CAL A → overlay appears, dismisses cleanly. |
+| AC7 | All 70 integration tests still pass (REST surface unchanged). | `python3 tests/integration/test_system.py` |
+| AC8 | HMI `/status` soak stays ≥ 80/90 (no regression from the pclk fix). | 90 s × 1 Hz triple-board soak |
 
 ---
 
@@ -252,14 +289,20 @@ All work in `src_hmi/main.cpp`. Estimated ~500 LOC churn.
 
 ## 8. Open questions
 
-- **Which palette?** Pick A, B, or C (or mix).
-- **Match timer in header?** Real timer derived from when START was
-  tapped, or just a static placeholder for now? Defer to a small
-  follow-up since the cam doesn't expose a match-start timestamp.
+- **Timer convention.** A button-soccer match isn't a standard
+  90-min football match. Options: (a) free-running count-up
+  showing `M' SS"`; (b) bounded countdown of N minutes (configurable
+  later); (c) showing periods/halves. Default in this plan: free
+  count-up — minimal state, no settings UI needed.
+- **Timer ring scale.** Default: full ring at 5 min match length
+  (which makes the ring visually advance fast enough to feel alive
+  in a typical 2-3 min play). The reference image shows 45' full,
+  but our matches are much shorter.
 - **Team names beyond HOME/AWAY?** Defer — would need a settings
   screen.
-- **Light icons (`⚽ ●`) — cheap primitives or skip entirely?**
-  Default in this plan: render as primitives. Less effort to skip.
+- **Glyph rendering for the soccer-ball app badge.** Cheap option:
+  just a green-felt circle with a white "G" text overlay. Skip the
+  pentagon-pattern complexity.
 
 ---
 
