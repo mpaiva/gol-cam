@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <HTTPClient.h>
 #include "esp_camera.h"
 #include "img_converters.h"
@@ -13,6 +14,7 @@
 #include "pins.h"
 #include "goal_detector.h"
 #include "frame_store.h"
+#include "wifi_multi_connect.h"
 #include <math.h>
 
 // --- WiFi credentials (from .env file via build defines) ---
@@ -483,20 +485,8 @@ void setup() {
     Serial.printf("Static IP: %s\n", WIFI_STATIC_IP);
 #endif
 
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.printf("Connecting to WiFi: %s", WIFI_SSID);
-    int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 30) {
-        delay(500);
-        Serial.print(".");
-        retries++;
-    }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\nWiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
-    } else {
-        Serial.println("\nWiFi failed — continuing without streaming");
-    }
+    static WiFiMulti wifiMulti;
+    connectWiFiMulti(wifiMulti);
 
     startCameraServer();
     Serial.printf("Dashboard: http://%s\n", WiFi.localIP().toString().c_str());

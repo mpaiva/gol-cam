@@ -19,11 +19,13 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <HTTPClient.h>
 #include "esp_http_server.h"
 #include <TJpg_Decoder.h>
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
+#include "wifi_multi_connect.h"
 
 #ifndef WIFI_SSID
 #error "WIFI_SSID not defined — set it in .env (see CLAUDE.md)"
@@ -1687,8 +1689,14 @@ static void serviceTouch() {
 // =============================================================
 // Polling
 // =============================================================
+static WiFiMulti wifiMulti;
+
 static void connectWiFi() {
 #ifdef WIFI_STATIC_IP
+    // Static IP only makes sense when there's a single known network;
+    // with multiple WiFiMulti slots we couldn't know which network's
+    // subnet the .89 belongs to. If you populate WIFI_SSID_1..4, drop
+    // WIFI_STATIC_IP and let DHCP assign on each network.
     IPAddress staticIP, gateway, subnet;
     staticIP.fromString(WIFI_STATIC_IP);
     gateway.fromString(WIFI_GATEWAY);
@@ -1698,21 +1706,7 @@ static void connectWiFi() {
     }
 #endif
     WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    Serial.printf("[wifi] connecting to %s", WIFI_SSID);
-    int retries = 0;
-    while (WiFi.status() != WL_CONNECTED && retries < 30) {
-        delay(500);
-        Serial.print(".");
-        retries++;
-    }
-    Serial.println();
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("[wifi] connected, IP=%s\n",
-                      WiFi.localIP().toString().c_str());
-    } else {
-        Serial.println("[wifi] FAILED — will keep retrying in loop()");
-    }
+    connectWiFiMulti(wifiMulti);
 }
 
 static void pollCam(CamState& c) {

@@ -12,8 +12,15 @@ if os.path.exists(env_file):
                 continue
             key, val = line.split("=", 1)
             key, val = key.strip(), val.strip()
-            if key in ("WIFI_SSID", "WIFI_PASSWORD", "WIFI_STATIC_IP", "WIFI_GATEWAY", "WIFI_SUBNET",
+            allowed = {"WIFI_SSID", "WIFI_PASSWORD", "WIFI_STATIC_IP", "WIFI_GATEWAY", "WIFI_SUBNET",
                        "BOARD_ROLE", "PEER_IP", "CAMERA_IP",
                        "SCOREBOARD_IP", "SCOREBOARD_SIDE",
-                       "SCOREBOARD_STATIC_IP", "SCOREBOARD_GATEWAY", "SCOREBOARD_SUBNET"):
+                       "SCOREBOARD_STATIC_IP", "SCOREBOARD_GATEWAY", "SCOREBOARD_SUBNET"}
+            # Multi-AP slots: WIFI_SSID_1..4 + WIFI_PASSWORD_1..4. The
+            # firmware uses WiFiMulti to scan + pick the strongest known
+            # SSID at boot, falling back across slots. See CLAUDE.md.
+            for i in range(1, 5):
+                allowed.add(f"WIFI_SSID_{i}")
+                allowed.add(f"WIFI_PASSWORD_{i}")
+            if key in allowed:
                 env.Append(CPPDEFINES=[(key, env.StringifyMacro(val))])

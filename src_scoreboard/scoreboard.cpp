@@ -16,9 +16,11 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiMulti.h>
 #include <WebServer.h>
 #include <MD_MAX72xx.h>
 #include <SPI.h>
+#include "wifi_multi_connect.h"
 
 // ---------- Wi-Fi (from .env via load_env.py) ----------
 #ifndef WIFI_SSID
@@ -357,19 +359,8 @@ static void iniciarWiFi() {
   WiFi.config(staticIP, gateway, subnet, dns);
   Serial.printf("[wifi] static IP requested: %s\n", SCOREBOARD_STATIC_IP);
 #endif
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  Serial.printf("[wifi] connecting to %s", WIFI_SSID);
-  int retries = 0;
-  while (WiFi.status() != WL_CONNECTED && retries < 40) {
-    delay(500);
-    Serial.print(".");
-    retries++;
-  }
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("\n[wifi] connected — IP: %s\n", WiFi.localIP().toString().c_str());
-  } else {
-    Serial.println("\n[wifi] connect FAILED — running offline");
-  }
+  static WiFiMulti wifiMulti;
+  connectWiFiMulti(wifiMulti, 40);
 }
 
 // ---------- Buttons ----------
