@@ -760,6 +760,59 @@ static esp_err_t handle_debug_rewrite(httpd_req_t* req) {
 // a safe sweep can't find the RST line. This endpoint was deleted to
 // prevent accidental panel damage from a stray curl.
 
+// Test-beep endpoint for the secondary HMI's attached speaker.
+//
+// I2S was tried first and ALWAYS broke the RGB panel — regardless of
+// pin choice, including pins not on the RGB data bus (10/11/12/13).
+// Suspected cause: GDMA channel contention. The CrowPanel streams its
+// RGB-565 framebuffer through GDMA, and the I2S driver allocates an
+// adjacent channel whose buffer-refill timing perturbs LCD pclk DMA —
+// the panel goes to vertical-line tearing.
+//
+// LEDC PWM has no GDMA dependency (timer/comparator peripheral), so
+// it can drive a piezo buzzer or feed a Class-D amp as a square wave
+// without disturbing the display. Imperfect for music; fine for a
+// goal celebration beep.
+//
+//   curl 'http://<hmi>/test-sound?pin=10&freq=2000&ms=500'
+//
+// Default pin = 10 (not on the RGB bus, not touch, not UART). Override
+// `pin` if you know the speaker's actual signal pin.
+static esp_err_t handle_test_sound(httpd_req_t* req) {
+    int pin = 10;
+    int freq = 2000;
+    int ms = 500;
+    char buf[96], val[8];
+    if (httpd_req_get_url_query_str(req, buf, sizeof(buf)) == ESP_OK) {
+        if (httpd_query_key_value(buf, "pin",  val, sizeof(val)) == ESP_OK) pin  = atoi(val);
+        if (httpd_query_key_value(buf, "freq", val, sizeof(val)) == ESP_OK) freq = atoi(val);
+        if (httpd_query_key_value(buf, "ms",   val, sizeof(val)) == ESP_OK) ms   = atoi(val);
+    }
+    if (ms < 50)     ms = 50;
+    if (ms > 3000)   ms = 3000;
+    if (freq < 50)   freq = 50;
+    if (freq > 8000) freq = 8000;
+
+    Serial.printf("[audio] beep pin=%d freq=%d ms=%d\n", pin, freq, ms);
+
+    // Arduino-ESP32 2.x LEDC API: explicit channel allocation.
+    // Channel 7 is unlikely to be in use elsewhere; 8-bit resolution
+    // gives a clean 50%-duty square wave via ledcWriteTone.
+    constexpr int LEDC_CHANNEL = 7;
+    ledcSetup(LEDC_CHANNEL, freq, 8);
+    ledcAttachPin(pin, LEDC_CHANNEL);
+    ledcWriteTone(LEDC_CHANNEL, freq);
+    delay(ms);
+    ledcWriteTone(LEDC_CHANNEL, 0);
+    ledcDetachPin(pin);
+
+    char ok[128];
+    snprintf(ok, sizeof(ok),
+        "{\"ok\":true,\"mode\":\"pwm\",\"pin\":%d,\"freq\":%d,\"ms\":%d}",
+        pin, freq, ms);
+    return send_json(req, 200, ok);
+}
+
 static void startWebServer() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port      = 80;
@@ -787,6 +840,7 @@ static void startWebServer() {
         { "/bz",                 handle_b_zero        },
         { "/debug/touch",        handle_debug_touch   },
         { "/debug/gt911-rewrite",handle_debug_rewrite },
+        { "/test-sound",         handle_test_sound    },
     };
     for (auto& r : routes) {
         httpd_uri_t u = { .uri = r.uri, .method = HTTP_GET,
