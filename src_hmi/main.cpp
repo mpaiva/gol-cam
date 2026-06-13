@@ -1825,12 +1825,40 @@ static void pollCam(CamState& c) {
     if (changed || msgChanged || autoChanged) dirtyOverlay = true;
 }
 
+#ifdef MIRROR_IP
+// Mirror-mode poll: this HMI is a secondary placar display and follows
+// the score on the primary at MIRROR_IP. Polled at 1 Hz from the same
+// worker that does pollCam — same thread, no HTTPClient race.
+// We do NOT push back to the primary; this is read-only mirroring.
+static void pollMirror() {
+    HTTPClient http;
+    String url = String("http://") + MIRROR_IP + "/status";
+    if (!http.begin(url)) return;
+    http.setTimeout(1000);
+    int code = http.GET();
+    if (code != 200) { http.end(); return; }
+    String body = http.getString();
+    http.end();
+    int a = (int)placarA, b = (int)placarB;
+    extractIntField(body, "a", &a);
+    extractIntField(body, "b", &b);
+    if (a != placarA || b != placarB) {
+        placarA = a;
+        placarB = b;
+        dirtyDigits = true;
+    }
+}
+#endif
+
 // Background worker on core 0. Drains queued UI actions, services the
 // cal-snapshot fetch flag, and polls the cameras (placar polling is
 // gone — we ARE the placar). All HTTP work is single-threaded here so
 // there's no race on the shared HTTPClient instance.
 static void workerTask(void*) {
     uint32_t lastCamA = 0, lastCamB = 0;
+#ifdef MIRROR_IP
+    uint32_t lastMirror = 0;
+#endif
     HttpCmd cmd;
     char fetchBuf[160];
     while (true) {
@@ -1861,6 +1889,12 @@ static void workerTask(void*) {
                                   : CAM_POLL_MS;
             if (now - lastCamA >= pollInterval) { pollCam(camA); lastCamA = now; }
             if (now - lastCamB >= pollInterval) { pollCam(camB); lastCamB = now; }
+#ifdef MIRROR_IP
+            // Mirror the primary HMI's score at 1 Hz. Same thread, same
+            // HTTPClient as pollCam — no race. The overlay throttle
+            // doesn't apply: score updates during cal should still flow.
+            if (now - lastMirror >= 1000) { pollMirror(); lastMirror = now; }
+#endif
         }
         vTaskDelay(pdMS_TO_TICKS(20));
     }
@@ -1940,6 +1974,10 @@ void setup() {
     renderSplash("Pronto", COL_GREEN);
     Serial.printf("[hmi] HMI is the placar @ %s  camA=%s  camB=%s\n",
                   WiFi.localIP().toString().c_str(), CAM_A_IP, CAM_B_IP);
+#ifdef MIRROR_IP
+    Serial.printf("[hmi] mirror mode ON — following score at %s @ 1 Hz\n",
+                  MIRROR_IP);
+#endif
 
     // First full draw so all four button rects exist before the first
     // touch event can land on them.

@@ -15,6 +15,7 @@ if os.path.exists(env_file):
             allowed = {"WIFI_SSID", "WIFI_PASSWORD", "WIFI_STATIC_IP", "WIFI_GATEWAY", "WIFI_SUBNET",
                        "BOARD_ROLE", "PEER_IP", "CAMERA_IP",
                        "CAM_A_IP", "CAM_B_IP",
+                       "MIRROR_IP",
                        "SCOREBOARD_IP", "SCOREBOARD_SIDE",
                        "SCOREBOARD_STATIC_IP", "SCOREBOARD_GATEWAY", "SCOREBOARD_SUBNET"}
             # Multi-AP slots: WIFI_SSID_1..4 + WIFI_PASSWORD_1..4. The
