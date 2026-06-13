@@ -308,11 +308,13 @@ struct CamState {
     int  autoTotal = 0;
     int  autoDone  = 0;
     bool hasCalSnap = false;
-    // calMsg can grow long ("FAILED: No edges found (20). Place dadinho
-    // dentro do gol"). 64 bytes covers the longest cam messages plus a
-    // null. The overlay render still truncates visually to fit the 760
-    // px panel width.
-    char calMsg[64] = {0};
+    // calMsg can grow LONG — cam's OK! success message reaches ~159
+    // chars ("OK! Edge threshold: ... Limits ... Colour ... Motion ..."),
+    // so a generous buffer is needed. 192 bytes fits every observed
+    // cam message with margin. drawCalOverlay still truncates the
+    // displayed portion visually so a long message doesn't overflow
+    // the panel width.
+    char calMsg[192] = {0};
 };
 static CamState camA;
 static CamState camB;
@@ -377,9 +379,10 @@ struct CalOverlay {
     // calMsg snapshot at raise-time — early-fail only fires when the
     // cam's calMsg differs from this (i.e. a fresh failure during THIS
     // calibration cycle, not the stale message from the previous one).
-    char     msgAtRaise[64];
+    // Size matches CamState::calMsg.
+    char     msgAtRaise[192];
 };
-static volatile CalOverlay calOverlay = { -1, 0, 0, 0, -1, 0, 0, {0} };
+static volatile CalOverlay calOverlay = { -1, 0, 0, 0, -1, 0, 0, {0} };  // msgAtRaise zero-filled
 
 // Last successful autotune timestamp per cam, indexed by side
 // (0 = A, 1 = B). Level B of autotune-chain.md: if <60 s since the
@@ -1272,6 +1275,63 @@ constexpr uint16_t OVL_BG     = 0xFFFF;   // white
 constexpr uint16_t OVL_BLUE   = 0x0011;   // strong dark blue
 constexpr uint16_t OVL_BLUE2  = 0x4A1F;   // lighter accent blue
 
+// Word-wrap the camera's calMsg into up to 2 lines at text size 2.
+// Breaks at the nearest space when a line would exceed ~58 chars;
+// truncates with "..." if the message is too long to fit even in 2
+// lines. Returns y of the line below the rendered block (top of next
+// element). Each line is centred horizontally.
+static int drawCalMsgWrapped(const char* msg, int yTop, uint16_t color) {
+    constexpr int CHARS_PER_LINE = 58;   // size 2 × 12 px × 58 = 696 px
+    constexpr int LINE_H         = 20;   // size 2 height (16) + 4 spacing
+
+    int len = (int)strlen(msg);
+    gfx->setTextSize(2);
+    gfx->setTextColor(color, OVL_BG);
+
+    if (len <= CHARS_PER_LINE) {
+        int mw = len * 12;
+        gfx->setCursor((800 - mw) / 2, yTop);
+        gfx->print(msg);
+        return yTop + LINE_H;
+    }
+
+    // Find a break point near CHARS_PER_LINE at a space.
+    int br = CHARS_PER_LINE;
+    for (int i = CHARS_PER_LINE; i > CHARS_PER_LINE - 15 && i > 0; i--) {
+        if (msg[i] == ' ') { br = i; break; }
+    }
+    // Line 1: up to br chars.
+    char line1[64];
+    int l1len = br;
+    if (l1len > 60) l1len = 60;
+    memcpy(line1, msg, l1len);
+    line1[l1len] = '\0';
+    int l1w = (int)strlen(line1) * 12;
+    gfx->setCursor((800 - l1w) / 2, yTop);
+    gfx->print(line1);
+
+    // Line 2: rest of the message, also wrapped to CHARS_PER_LINE.
+    int rest = br;
+    while (rest < len && msg[rest] == ' ') rest++;  // skip leading spaces
+    int remaining = len - rest;
+    char line2[68];
+    if (remaining <= CHARS_PER_LINE) {
+        memcpy(line2, msg + rest, remaining);
+        line2[remaining] = '\0';
+    } else {
+        // Truncate with ellipsis — message too long to fit in 2 lines.
+        int copy = CHARS_PER_LINE - 3;
+        memcpy(line2, msg + rest, copy);
+        line2[copy] = '\0';
+        strcat(line2, "...");
+    }
+    int l2w = (int)strlen(line2) * 12;
+    gfx->setCursor((800 - l2w) / 2, yTop + LINE_H);
+    gfx->print(line2);
+
+    return yTop + 2 * LINE_H;
+}
+
 static void drawCalOverlay() {
     // Snapshot the volatile fields one at a time — copying a volatile
     // struct directly isn't allowed by the language.
@@ -1366,14 +1426,8 @@ static void drawCalOverlay() {
         // per sweep step) + a "passo X/Y" counter + a fine-grained
         // progress bar driven by autoStep / autoTotal.
         const char* tunDefault = "Detectando melhor exposicao";
-        char msg[64];
-        snprintf(msg, sizeof(msg), "%s", c.calMsg[0] ? c.calMsg : tunDefault);
-        gfx->setTextSize(2);
-        gfx->setTextColor(OVL_BLUE2, OVL_BG);
-        int mw = (int)strlen(msg) * 12;
-        if (mw > 780) mw = 780;
-        gfx->setCursor((800 - mw) / 2, 320);
-        gfx->print(msg);
+        const char* src = c.calMsg[0] ? c.calMsg : tunDefault;
+        drawCalMsgWrapped(src, 308, OVL_BLUE2);
 
         // Step counter — only show if cam has reported a non-zero
         // total (i.e., sweep has actually started).
@@ -1405,15 +1459,8 @@ static void drawCalOverlay() {
         // CAL sub-phase: live calMsg + the original coarse 3-stop
         // progress bar (hasCalSnap, calContrast). Unchanged from
         // pre-chain behaviour.
-        char msg[64];
-        snprintf(msg, sizeof(msg), "%s",
-                 c.calMsg[0] ? c.calMsg : "Coloque o dadinho dentro do gol");
-        gfx->setTextSize(2);
-        gfx->setTextColor(OVL_BLUE2, OVL_BG);
-        int mw = (int)strlen(msg) * 12;
-        if (mw > 780) mw = 780;
-        gfx->setCursor((800 - mw) / 2, 320);
-        gfx->print(msg);
+        const char* src = c.calMsg[0] ? c.calMsg : "Coloque o dadinho dentro do gol";
+        drawCalMsgWrapped(src, 308, OVL_BLUE2);
 
         int barX = 150, barY = 360, barW = 500, barH = 22;
         gfx->drawRect(barX, barY, barW, barH, OVL_BLUE);
