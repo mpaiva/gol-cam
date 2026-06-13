@@ -37,13 +37,15 @@
 #error "SCOREBOARD_IP not defined — set it in .env"
 #endif
 
-// Camera IPs. Default to the static IPs from the standard scheme; can be
-// overridden in .env via CAM_A_IP / CAM_B_IP if your network differs.
+// Camera IPs. Default to the standard scheme on the current deployment
+// subnet (192.168.1.x); .env overrides via CAM_A_IP / CAM_B_IP. The
+// last-octet convention (.90 cam A / .91 cam B) is stable across
+// network changes — only the subnet prefix follows the WiFi.
 #ifndef CAM_A_IP
-#define CAM_A_IP "192.168.40.90"
+#define CAM_A_IP "192.168.1.90"
 #endif
 #ifndef CAM_B_IP
-#define CAM_B_IP "192.168.40.91"
+#define CAM_B_IP "192.168.1.91"
 #endif
 
 // CrowPanel DIS07050H pinout — bare B0/R0/.. collide with Arduino's bit
@@ -715,7 +717,7 @@ static esp_err_t handle_reset(httpd_req_t* req) {
 
 // Diagnostic: snapshot of what the GT911 has reported lately. Curl this
 // from a laptop to check whether the chip is scanning at all without
-// needing a serial cable: `curl -s http://192.168.40.89/debug/touch`.
+// needing a serial cable: `curl -s http://192.168.1.89/debug/touch`.
 static esp_err_t handle_debug_touch(httpd_req_t* req) {
     char body[384];
     snprintf(body, sizeof(body),
@@ -734,7 +736,7 @@ static esp_err_t handle_debug_touch(httpd_req_t* req) {
 
 // Force-rewrite of the fallback config blob even if a factory config
 // is currently loaded. Use to recover a chip whose config got corrupted
-// by an earlier experiment. `curl http://192.168.40.89/debug/gt911-rewrite`.
+// by an earlier experiment. `curl http://192.168.1.89/debug/gt911-rewrite`.
 static esp_err_t handle_debug_rewrite(httpd_req_t* req) {
     bool ok = gt911::writeFactoryConfig();
     char body[128];

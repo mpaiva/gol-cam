@@ -43,11 +43,17 @@ Para uma configuração com apenas uma câmera, omita a Câmera B. Placa e câme
 
 **Esquema de IP estático sugerido** (define em `.env` via `WIFI_STATIC_IP` / `SCOREBOARD_STATIC_IP`):
 
+O esquema mantém o **último octeto** fixo (`.89` placar / `.90` cam A /
+`.91` cam B) — o prefixo da subnet acompanha a rede WiFi. Hoje em
+`192.168.1.x` (RI69); antes em `192.168.40.x` (cross.team-orl). Use os
+slots `WIFI_SSID_1..4` no `.env` para registrar redes conhecidas e o
+firmware (WiFiMulti) escolhe a melhor disponível no boot.
+
 | Placa | IP | Observação |
 |---|---|---|
-| Placar (LED **ou** HMI, não ambos ao mesmo tempo) | `192.168.40.89` | Câmeras empurram gols para cá |
-| Câmera A (side A) | `192.168.40.90` | `BOARD_ROLE` não definido |
-| Câmera B (side B) | `192.168.40.91` | `BOARD_ROLE=home` |
+| Placar (LED **ou** HMI, não ambos ao mesmo tempo) | `192.168.1.89` | Câmeras empurram gols para cá |
+| Câmera A (side A) | `192.168.1.90` | `BOARD_ROLE` não definido |
+| Câmera B (side B) | `192.168.1.91` | `BOARD_ROLE=home` |
 
 ## Como funciona a detecção
 
@@ -211,17 +217,17 @@ WIFI_SSID=nome-da-sua-rede
 WIFI_PASSWORD=sua-senha
 
 # IP do placar — todas as câmeras empurram gols para cá (recomendado: estático)
-SCOREBOARD_IP=192.168.40.89
-SCOREBOARD_STATIC_IP=192.168.40.89
-SCOREBOARD_GATEWAY=192.168.40.1
+SCOREBOARD_IP=192.168.1.89
+SCOREBOARD_STATIC_IP=192.168.1.89
+SCOREBOARD_GATEWAY=192.168.1.1
 SCOREBOARD_SUBNET=255.255.255.0
 
 # Per-board (definir antes de gravar cada câmera; valores comentados são exemplos)
-# Câmera A (side A — padrão):  WIFI_STATIC_IP=192.168.40.90, BOARD_ROLE não definido
-# Câmera B (side B):            WIFI_STATIC_IP=192.168.40.91, BOARD_ROLE=home
-WIFI_GATEWAY=192.168.40.1
+# Câmera A (side A — padrão):  WIFI_STATIC_IP=192.168.1.90, BOARD_ROLE não definido
+# Câmera B (side B):            WIFI_STATIC_IP=192.168.1.91, BOARD_ROLE=home
+WIFI_GATEWAY=192.168.1.1
 WIFI_SUBNET=255.255.255.0
-# WIFI_STATIC_IP=192.168.40.90
+# WIFI_STATIC_IP=192.168.1.90
 # BOARD_ROLE=home              # home → side B; ausente → side A
 # SCOREBOARD_SIDE=b            # override explícito (a|b), tem prioridade sobre BOARD_ROLE
 ```
@@ -245,7 +251,7 @@ pio run -e crowpanel_hmi -t upload
 
 O ambiente padrão é `dfr1154`, então um `pio run` sem parâmetros compila a câmera. Grave uma placa por vez, ajustando o `.env` entre gravações se quiser valores diferentes de `BOARD_ROLE` ou IP estático.
 
-Para usar o **HMI no lugar do placar LED**, defina `WIFI_STATIC_IP=192.168.40.89` antes de gravar o HMI e desligue a placa do MAX7219 — as câmeras seguem empurrando gols para `.89` sem nenhuma mudança no firmware delas.
+Para usar o **HMI no lugar do placar LED**, defina `WIFI_STATIC_IP=192.168.1.89` antes de gravar o HMI e desligue a placa do MAX7219 — as câmeras seguem empurrando gols para `.89` sem nenhuma mudança no firmware delas.
 
 ### Passo 5 — Descobrir o IP e abrir o painel
 
@@ -272,7 +278,7 @@ O placar serve sua própria interface simples no IP dele (incremento/reset manua
 ### Placar autônomo (sem câmera)
 
 Mesmo com as câmeras offline ou desligadas, o placar continua funcionando:
-- **Placar LED**: botões físicos sempre funcionam (UP A/B, RESET A/B). A interface web em `http://192.168.40.89/` espelha os botões + adiciona `/api/reset`.
+- **Placar LED**: botões físicos sempre funcionam (UP A/B, RESET A/B). A interface web em `http://192.168.1.89/` espelha os botões + adiciona `/api/reset`.
 - **HMI touchscreen**: os 8 botões na tela (A+ / A− / B+ / B−, CAL A / START / RESET / CAL B) operam o placar e as câmeras direto pelo display, sem precisar de celular ou notebook.
 - Endpoints REST disponíveis em qualquer das duas placas: `/goal?side=a|b` (+1), `/goal-undo?side=a|b` (−1, com piso em 0), `/a+`, `/b+`, `/az`, `/bz`, `/reset`, `/api/reset`, `/status`.
 - O HMI também expõe endpoints de diagnóstico do touch: `/debug/touch` retorna estado do controlador GT911 em JSON (útil quando o painel parece não responder).

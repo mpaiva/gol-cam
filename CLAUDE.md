@@ -8,7 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 1. **Camera board** (DFR1154 / ESP32-S3) — detects goals via colour + motion + edge triggers, plays a celebration beep, serves training and match web dashboards.
 2. **Placar board** (ESP32 DevKit + 4× MAX7219) — physical LED scoreboard, increments on camera push or manual button override.
-3. **CrowPanel HMI** (ESP32-S3 + 5" 800×480 capacitive touch) — *optional* touchscreen placar / operator surface. Speaks the same REST protocol as the MAX7219 placar, so it can run as a parallel placar or replace the LED board outright by claiming `WIFI_STATIC_IP=192.168.40.89`. On-screen buttons (Cal A / Start / Reset All / Cal B) fan HTTP requests out to the cameras so a match needs no laptop.
+3. **CrowPanel HMI** (ESP32-S3 + 5" 800×480 capacitive touch) — *optional* touchscreen placar / operator surface. Speaks the same REST protocol as the MAX7219 placar, so it can run as a parallel placar or replace the LED board outright by claiming `WIFI_STATIC_IP=192.168.1.89`. On-screen buttons (Cal A / Start / Reset All / Cal B) fan HTTP requests out to the cameras so a match needs no laptop.
 
 Both firmwares live in this single PlatformIO project; `hardware/` holds the 3D-printable enclosures imported from the auxiliary `GOOOL Elatronico` project. The original `Placar Eletronico` project was consolidated into this repo on 2026-05-24 — see `.plans/consolidation-plan.md`.
 
@@ -76,13 +76,20 @@ SCOREBOARD_IP=192.168.0.110     # placar IP (camera pushes here)
 
 **IP scheme in use** (kept in `.env`, not git-tracked):
 
+The deployment subnet follows whichever WiFi network the boards are on
+— the last octet (`.89` placar / `.90` cam A / `.91` cam B) stays
+stable so the boards are identifiable at a glance. Currently on RI69
+(`192.168.1.x`); previously on cross.team-orl (`192.168.40.x`).
+WiFiMulti picks the strongest known SSID at boot (slots `WIFI_SSID_1`
+… `_4` in `.env`).
+
 | Board | IP | Build defines set before flash |
 |---|---|---|
-| Placar | `192.168.40.89` | `SCOREBOARD_STATIC_IP=192.168.40.89` (already permanent in `.env`) |
-| Cam A (side A) | `192.168.40.90` | `WIFI_STATIC_IP=192.168.40.90` (BOARD_ROLE unset → default side A) |
-| Cam B (side B) | `192.168.40.91` | `WIFI_STATIC_IP=192.168.40.91` + `BOARD_ROLE=home` |
+| Placar / HMI | `192.168.1.89` | `WIFI_STATIC_IP=192.168.1.89` (HMI) — or `SCOREBOARD_STATIC_IP=192.168.1.89` (LED placar) |
+| Cam A (side A) | `192.168.1.90` | `WIFI_STATIC_IP=192.168.1.90` (BOARD_ROLE unset → default side A) |
+| Cam B (side B) | `192.168.1.91` | `WIFI_STATIC_IP=192.168.1.91` + `BOARD_ROLE=home` |
 
-`SCOREBOARD_IP=192.168.40.89` in `.env` is permanent — both cameras push goals there.
+`SCOREBOARD_IP=192.168.1.89` in `.env` is permanent — both cameras push goals there.
 
 ## Architecture
 
@@ -140,9 +147,9 @@ The camera reports its `"side"` in `/status`, resolved at boot from `SCOREBOARD_
 - `platformio.ini` — Three environments:
   - `[env:dfr1154]` — `esp32-s3-devkitc-1`, 16 MB flash, OPI PSRAM, custom `partitions.csv`. Compiles `src/` only (excludes `../src_scoreboard/` + `../src_hmi/`).
   - `[env:placar]` — `esp32dev`, depends on `majicdesigns/MD_MAX72XX@^3.5.0`. Compiles `../src_scoreboard/` only (excludes `src/`).
-  - `[env:crowpanel_hmi]` — `esp32-s3-devkitc-1`, 4 MB flash, OPI PSRAM, default partition. Compiles `../src_hmi/` only (excludes `src/`). The HMI now serves the **same REST contract as the LED placar** (`/status`, `/api/reset`, `/goal?side=a|b`, `/goal-undo?side=a|b`, `/reset`, `/a+`, `/b+`, `/az`, `/bz`) plus an on-screen score + touch buttons for Cal A / Start / Reset All / Cal B. To replace the MAX7219 placar entirely, set `WIFI_STATIC_IP=192.168.40.89` in `.env`, reflash the HMI, and power the MAX7219 off — cameras need no change because they still push to `.89`.
+  - `[env:crowpanel_hmi]` — `esp32-s3-devkitc-1`, 4 MB flash, OPI PSRAM, default partition. Compiles `../src_hmi/` only (excludes `src/`). The HMI now serves the **same REST contract as the LED placar** (`/status`, `/api/reset`, `/goal?side=a|b`, `/goal-undo?side=a|b`, `/reset`, `/a+`, `/b+`, `/az`, `/bz`) plus an on-screen score + touch buttons for Cal A / Start / Reset All / Cal B. To replace the MAX7219 placar entirely, set `WIFI_STATIC_IP=192.168.1.89` in `.env`, reflash the HMI, and power the MAX7219 off — cameras need no change because they still push to `.89`.
 - `partitions.csv` — Custom partition layout for the 16 MB flash on the DFR1154
-- `load_env.py` — PlatformIO pre-script that reads `.env` and injects whitelisted variables as `CPPDEFINES`: `WIFI_SSID`, `WIFI_PASSWORD`, `WIFI_STATIC_IP`, `WIFI_GATEWAY`, `WIFI_SUBNET`, `BOARD_ROLE`, `PEER_IP`, `CAMERA_IP`, `SCOREBOARD_IP`, `SCOREBOARD_SIDE`, `SCOREBOARD_STATIC_IP`, `SCOREBOARD_GATEWAY`, `SCOREBOARD_SUBNET`.
+- `load_env.py` — PlatformIO pre-script that reads `.env` and injects whitelisted variables as `CPPDEFINES`: `WIFI_SSID`, `WIFI_PASSWORD`, `WIFI_SSID_1..4` + `WIFI_PASSWORD_1..4` (WiFiMulti slots), `WIFI_STATIC_IP`, `WIFI_GATEWAY`, `WIFI_SUBNET`, `BOARD_ROLE`, `PEER_IP`, `CAMERA_IP`, `CAM_A_IP`, `CAM_B_IP`, `SCOREBOARD_IP`, `SCOREBOARD_SIDE`, `SCOREBOARD_STATIC_IP`, `SCOREBOARD_GATEWAY`, `SCOREBOARD_SUBNET`.
 
 ## Project Tracking
 
