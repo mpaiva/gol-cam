@@ -26,12 +26,21 @@ import urllib.request
 
 
 # ---------------------------------------------------------------------------
-# Default board addresses (the .env-documented IP scheme)
+# Default board addresses. The project's IP scheme keeps the LAST octet
+# stable (.89 placar / .90 cam A / .91 cam B) so the boards are
+# identifiable at a glance; only the subnet prefix changes when the
+# WiFi network does. Update these defaults whenever the deployment
+# subnet changes (use --placar / --cam-a / --cam-b for a one-shot
+# override).
+#
+# History:
+#   2026-05  cross.team-orl: 192.168.40.x
+#   2026-06  RI69:            192.168.1.x   ← current
 # ---------------------------------------------------------------------------
 DEFAULTS = {
-    "placar": "192.168.40.89",
-    "cam_a":  "192.168.40.90",
-    "cam_b":  "192.168.40.91",
+    "placar": "192.168.1.89",
+    "cam_a":  "192.168.1.90",
+    "cam_b":  "192.168.1.91",
 }
 
 
