@@ -846,6 +846,14 @@ static void playJingle() {
     Serial.println("[play] jingle done");
 }
 
+// MP3 decode through this hardware was tested + DEFINITIVELY ruled out:
+// 14-second decode of /gol-sound/gol-brasil.mp3 produced silence on the
+// buzzer. The CrowPanel ships a tone-only piezo, not a PCM-capable amp,
+// so PWM-as-analog playback is filtered to inaudibility regardless of
+// carrier choice. The decoded MP3 file stays on the SD card for a
+// future I2S-amp wiring upgrade — until then, only the LEDC tone
+// jingle is audible.
+
 static void playerTask(void*) {
     while (true) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
