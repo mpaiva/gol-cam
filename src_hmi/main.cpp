@@ -25,6 +25,8 @@
 #include <TJpg_Decoder.h>
 #include <Wire.h>
 #include <Arduino_GFX_Library.h>
+#include <SPI.h>
+#include <SD.h>
 #include "wifi_multi_connect.h"
 
 #ifndef WIFI_SSID
@@ -318,6 +320,10 @@ struct CamState {
 };
 static CamState camA;
 static CamState camB;
+
+// Forward decl: the celebration jingle helper lives down in the player
+// section. Goal handlers above that section trigger it on score updates.
+static void triggerJingle();
 
 // HMI maintains its own score state — this device IS the placar, so
 // /status / /goal / /goal-undo / /api/reset hit local memory rather
@@ -654,16 +660,46 @@ static esp_err_t handle_status(httpd_req_t* req) {
     return send_json(req, 200, body);
 }
 
+// --- Goal celebration beep -------------------------------------------------
+// Non-blocking PWM tone on pin 17 (confirmed via /test-sound sweep) lasting
+// GOAL_BEEP_MS. LEDC channel 6, separate from the /test-sound debug channel,
+// so a probe in flight doesn't tear this down.
+constexpr int GOAL_BEEP_PIN  = 17;
+constexpr int GOAL_BEEP_FREQ = 2200;
+constexpr int GOAL_BEEP_MS   = 220;
+constexpr int GOAL_BEEP_CH   = 6;
+static volatile bool     goalBeepActive   = false;
+static volatile uint32_t goalBeepStopAtMs = 0;
+
+static void startGoalBeep() {
+    if (goalBeepActive) return;
+    ledcSetup(GOAL_BEEP_CH, GOAL_BEEP_FREQ, 8);
+    ledcAttachPin(GOAL_BEEP_PIN, GOAL_BEEP_CH);
+    ledcWriteTone(GOAL_BEEP_CH, GOAL_BEEP_FREQ);
+    goalBeepStopAtMs = millis() + GOAL_BEEP_MS;
+    goalBeepActive   = true;
+}
+
+static void serviceGoalBeep() {
+    if (goalBeepActive && (int32_t)(millis() - goalBeepStopAtMs) >= 0) {
+        ledcWriteTone(GOAL_BEEP_CH, 0);
+        ledcDetachPin(GOAL_BEEP_PIN);
+        goalBeepActive = false;
+    }
+}
+
 static esp_err_t handle_goal(httpd_req_t* req) {
     char side[4];
     if (!query_get_lower(req, "side", side, sizeof(side))) {
         return send_json(req, 400, "{\"ok\":false,\"err\":\"side must be a or b\"}");
     }
-    if      (side[0] == 'a' && !side[1]) { if (placarA < 99) { placarA++; dirtyDigits = true; } }
-    else if (side[0] == 'b' && !side[1]) { if (placarB < 99) { placarB++; dirtyDigits = true; } }
+    bool scored = false;
+    if      (side[0] == 'a' && !side[1]) { if (placarA < 99) { placarA++; dirtyDigits = true; scored = true; } }
+    else if (side[0] == 'b' && !side[1]) { if (placarB < 99) { placarB++; dirtyDigits = true; scored = true; } }
     else {
         return send_json(req, 400, "{\"ok\":false,\"err\":\"side must be a or b\"}");
     }
+    if (scored) triggerJingle();
     char body[80];
     snprintf(body, sizeof(body), "{\"ok\":true,\"side\":\"%c\",\"a\":%d,\"b\":%d}",
              side[0], (int)placarA, (int)placarB);
@@ -695,12 +731,12 @@ static esp_err_t handle_api_reset(httpd_req_t* req) {
 // exposed, so any existing tooling that pokes /a+, /b+, /az, /bz, /reset
 // still works against this device.
 static esp_err_t handle_a_plus(httpd_req_t* req) {
-    if (placarA < 99) { placarA++; dirtyDigits = true; }
+    if (placarA < 99) { placarA++; dirtyDigits = true; triggerJingle(); }
     char body[96]; build_status_json(body, sizeof(body));
     return send_json(req, 200, body);
 }
 static esp_err_t handle_b_plus(httpd_req_t* req) {
-    if (placarB < 99) { placarB++; dirtyDigits = true; }
+    if (placarB < 99) { placarB++; dirtyDigits = true; triggerJingle(); }
     char body[96]; build_status_json(body, sizeof(body));
     return send_json(req, 200, body);
 }
@@ -759,6 +795,203 @@ static esp_err_t handle_debug_rewrite(httpd_req_t* req) {
 // the boot sweep on 2026-06-03 and none silenced the GT911 — so even
 // a safe sweep can't find the RST line. This endpoint was deleted to
 // prevent accidental panel damage from a stray curl.
+
+extern bool sdReady;            // forward — defined below in the SD section.
+
+// --- Goal celebration jingle --------------------------------------------
+// The CrowPanel DIS07050H ships with a tone-only buzzer, not an audio
+// amp — pure-tone PWM works, but high-frequency carrier modulation
+// (the technique that would let an MP3 decode through one pin) is
+// silent. We tried both audio-tools' PWMAudioOutput and a hand-rolled
+// 80 kHz carrier + sample-rate duty modulation; the buzzer filters
+// the carrier and produces nothing audible. So instead of real audio
+// we play a short "gol-gol-gol!" fanfare from a tone table.
+//
+//   GET /play             (fires the jingle)
+//   GET /stop             (cuts it short)
+//
+// The jingle also auto-fires on goal pushes (handle_goal) so the
+// scoreboard celebrates without the operator needing to push /play.
+constexpr int PLAY_PWM_PIN = 17;
+constexpr int PLAY_LEDC_CH = 5;     // distinct from goal-beep(6) + test(7)
+static TaskHandle_t playerTaskHandle = nullptr;
+static volatile bool   playerActive   = false;
+static volatile bool   playerStopReq  = false;
+
+// Three short "gol" beeps then a held climax — about 1.1 s total.
+// Frequencies form a major arpeggio so the fanfare sounds celebratory
+// (E5 → G#5 → C6) rather than three identical chirps.
+struct JingleNote { int freq_hz; int dur_ms; int gap_ms; };
+static const JingleNote JINGLE[] = {
+    { 1000,  90, 70 },   // GOL
+    { 1000,  90, 70 },   // GOL
+    { 1000,  90, 180 },  // GOL  (longer gap → "...!")
+    { 1318, 140,  0 },   // fanfare: E6
+    { 1568, 140,  0 },   // G6
+    { 2093, 280,  0 },   // C7 (climax, held)
+};
+
+static void playJingle() {
+    Serial.println("[play] jingle start");
+    for (auto& n : JINGLE) {
+        if (playerStopReq) break;
+        ledcSetup(PLAY_LEDC_CH, n.freq_hz, 8);
+        ledcAttachPin(PLAY_PWM_PIN, PLAY_LEDC_CH);
+        ledcWriteTone(PLAY_LEDC_CH, n.freq_hz);
+        vTaskDelay(pdMS_TO_TICKS(n.dur_ms));
+        ledcWriteTone(PLAY_LEDC_CH, 0);
+        ledcDetachPin(PLAY_PWM_PIN);
+        if (n.gap_ms > 0) vTaskDelay(pdMS_TO_TICKS(n.gap_ms));
+    }
+    Serial.println("[play] jingle done");
+}
+
+static void playerTask(void*) {
+    while (true) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        playJingle();
+        playerStopReq = false;
+        playerActive  = false;
+    }
+}
+
+static void startPlayerTaskOnce() {
+    if (playerTaskHandle) return;
+    // Pin to core 0 (away from Arduino loopTask on core 1) so playback
+    // doesn't stall touch / render. Generous stack — libhelix-mp3
+    // allocates working buffers on the stack. Priority 1 (above IDLE
+    // but below WiFi/HTTP background tasks at priority ≥3).
+    xTaskCreatePinnedToCore(playerTask, "mp3player", 12288, nullptr, 1,
+                            &playerTaskHandle, 0);
+}
+
+static void triggerJingle() {
+    if (playerActive || !playerTaskHandle) return;
+    playerActive = true;
+    xTaskNotifyGive(playerTaskHandle);
+}
+
+static esp_err_t handle_play(httpd_req_t* req) {
+    if (playerActive) {
+        return send_json(req, 200, "{\"ok\":true,\"already\":true}");
+    }
+    triggerJingle();
+    return send_json(req, 200, "{\"ok\":true}");
+}
+
+static esp_err_t handle_stop(httpd_req_t* req) {
+    if (!playerActive) {
+        return send_json(req, 200, "{\"ok\":true,\"playing\":false}");
+    }
+    playerStopReq = true;
+    return send_json(req, 200, "{\"ok\":true,\"stop\":\"requested\"}");
+}
+
+// --- SD card -------------------------------------------------------------
+// CrowPanel DIS07050H ships a microSD slot on SPI. The pin convention
+// matches the DFR1154 camera (CS=10 MOSI=11 SCK=12 MISO=13) — which is
+// also why those pins were silent during the PWM speaker probe: they're
+// not free, they go to the SD slot.
+constexpr int HMI_SD_CS   = 10;
+constexpr int HMI_SD_MOSI = 11;
+constexpr int HMI_SD_SCK  = 12;
+constexpr int HMI_SD_MISO = 13;
+bool sdReady = false;   // defined here, forward-declared above the player.
+
+static bool initSD() {
+    SPI.begin(HMI_SD_SCK, HMI_SD_MISO, HMI_SD_MOSI, HMI_SD_CS);
+    if (!SD.begin(HMI_SD_CS, SPI, 20000000)) {
+        Serial.println("[sd] mount FAILED");
+        return false;
+    }
+    uint8_t type = SD.cardType();
+    uint64_t mb  = SD.cardSize() / (1024 * 1024);
+    const char* t = (type == CARD_NONE) ? "NONE"
+                   : (type == CARD_MMC) ? "MMC"
+                   : (type == CARD_SD)  ? "SD"
+                   : (type == CARD_SDHC)? "SDHC" : "UNKNOWN";
+    Serial.printf("[sd] mounted type=%s size=%llu MB\n", t, mb);
+    return true;
+}
+
+// /sd-ls?dir=/gol-sound[&ext=mp3]
+// Returns a JSON list of entries (with name + size). When `ext` is set,
+// only files whose name ends with .<ext> (case-insensitive) are returned.
+static esp_err_t handle_sd_ls(httpd_req_t* req) {
+    if (!sdReady) {
+        return send_json(req, 503,
+            "{\"ok\":false,\"err\":\"sd not mounted\"}");
+    }
+    char dir[64] = "/";
+    char ext[8]  = "";
+    char qs[128];
+    if (httpd_req_get_url_query_str(req, qs, sizeof(qs)) == ESP_OK) {
+        char v[64];
+        if (httpd_query_key_value(qs, "dir", v, sizeof(v)) == ESP_OK) {
+            strncpy(dir, v, sizeof(dir) - 1);
+            dir[sizeof(dir) - 1] = 0;
+        }
+        if (httpd_query_key_value(qs, "ext", v, sizeof(v)) == ESP_OK) {
+            strncpy(ext, v, sizeof(ext) - 1);
+            ext[sizeof(ext) - 1] = 0;
+        }
+    }
+
+    File root = SD.open(dir);
+    if (!root || !root.isDirectory()) {
+        char e[128];
+        snprintf(e, sizeof(e),
+            "{\"ok\":false,\"err\":\"not a directory: %s\"}", dir);
+        if (root) root.close();
+        return send_json(req, 404, e);
+    }
+
+    // Stream the response so we don't have to size a buffer up front.
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    char chunk[256];
+    snprintf(chunk, sizeof(chunk),
+             "{\"ok\":true,\"dir\":\"%s\",\"files\":[", dir);
+    httpd_resp_send_chunk(req, chunk, HTTPD_RESP_USE_STRLEN);
+
+    size_t extLen = strlen(ext);
+    bool first = true;
+    int count = 0;
+    File entry;
+    while ((entry = root.openNextFile())) {
+        const char* name = entry.name();
+        if (!entry.isDirectory()) {
+            bool match = (extLen == 0);
+            if (extLen > 0) {
+                size_t nl = strlen(name);
+                if (nl > extLen + 1 && name[nl - extLen - 1] == '.') {
+                    match = true;
+                    for (size_t i = 0; i < extLen; i++) {
+                        char a = tolower(name[nl - extLen + i]);
+                        char b = tolower(ext[i]);
+                        if (a != b) { match = false; break; }
+                    }
+                }
+            }
+            if (match) {
+                snprintf(chunk, sizeof(chunk),
+                         "%s{\"name\":\"%s\",\"size\":%u}",
+                         first ? "" : ",",
+                         name, (unsigned)entry.size());
+                httpd_resp_send_chunk(req, chunk, HTTPD_RESP_USE_STRLEN);
+                first = false;
+                count++;
+            }
+        }
+        entry.close();
+    }
+    root.close();
+
+    snprintf(chunk, sizeof(chunk), "],\"count\":%d}", count);
+    httpd_resp_send_chunk(req, chunk, HTTPD_RESP_USE_STRLEN);
+    httpd_resp_send_chunk(req, NULL, 0);
+    return ESP_OK;
+}
 
 // Test-beep endpoint for the secondary HMI's attached speaker.
 //
@@ -841,6 +1074,9 @@ static void startWebServer() {
         { "/debug/touch",        handle_debug_touch   },
         { "/debug/gt911-rewrite",handle_debug_rewrite },
         { "/test-sound",         handle_test_sound    },
+        { "/sd-ls",              handle_sd_ls         },
+        { "/play",               handle_play          },
+        { "/stop",               handle_stop          },
     };
     for (auto& r : routes) {
         httpd_uri_t u = { .uri = r.uri, .method = HTTP_GET,
@@ -1179,6 +1415,18 @@ static void drawScoreboardPill() {
     };
     drawTeamRow(0);
     drawTeamRow(1);
+
+    // --- Self IP label (bottom-right of pill). So the operator can tell
+    // physically-identical HMIs apart at a glance. Size 1 (6×8 px), in
+    // grey on cream. ---
+    IPAddress ip = WiFi.localIP();
+    char ipBuf[20];
+    snprintf(ipBuf, sizeof(ipBuf), "%u.%u.%u.%u", ip[0], ip[1], ip[2], ip[3]);
+    int ipw = (int)strlen(ipBuf) * 6;
+    gfx->setTextSize(1);
+    gfx->setTextColor(COL_GREY, COL_PILL);
+    gfx->setCursor(SB_X + SB_W - ipw - 14, SB_Y + SB_H - 12);
+    gfx->print(ipBuf);
 }
 
 // Just the timer disc — for the 1 Hz tick repaint (saves redrawing the
@@ -2023,6 +2271,8 @@ void setup() {
     delay(50);
     gt911::begin();
 
+    sdReady = initSD();
+    startPlayerTaskOnce();
     connectWiFi();
     startWebServer();
     renderSplash("Pronto", COL_GREEN);
@@ -2063,6 +2313,9 @@ void loop() {
 
     // Touch first so button feedback feels instant.
     serviceTouch();
+
+    // Tear down the goal beep when its duration elapses (non-blocking).
+    serviceGoalBeep();
 
     // esp_http_server runs on its own background task (configured with
     // 10 max sockets + LRU purge), so there's no handleClient() to call
