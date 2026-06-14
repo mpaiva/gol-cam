@@ -27,6 +27,8 @@
 #include <Arduino_GFX_Library.h>
 #include <SPI.h>
 #include <SD.h>
+#include "AudioTools.h"
+#include "AudioTools/AudioCodecs/CodecMP3Helix.h"
 #include "wifi_multi_connect.h"
 
 #ifndef WIFI_SSID
@@ -846,18 +848,63 @@ static void playJingle() {
     Serial.println("[play] jingle done");
 }
 
-// MP3 decode through this hardware was tested + DEFINITIVELY ruled out:
-// 14-second decode of /gol-sound/gol-brasil.mp3 produced silence on the
-// buzzer. The CrowPanel ships a tone-only piezo, not a PCM-capable amp,
-// so PWM-as-analog playback is filtered to inaudibility regardless of
-// carrier choice. The decoded MP3 file stays on the SD card for a
-// future I2S-amp wiring upgrade — until then, only the LEDC tone
-// jingle is audible.
+// Re-enabled (per user request) the MP3 decode path so /goal also
+// attempts to play /gol-sound/gol-brasil.mp3 from SD before falling
+// back to the jingle. Earlier testing concluded the buzzer is
+// tone-only — keep this path for an eventual I2S-amp upgrade.
+static const char* GOAL_MP3_PATH = "/gol-sound/gol-brasil.mp3";
+
+static bool playGoalMP3() {
+    if (!sdReady) return false;
+    File f = SD.open(GOAL_MP3_PATH);
+    if (!f) {
+        Serial.printf("[play] MP3 not on SD: %s\n", GOAL_MP3_PATH);
+        return false;
+    }
+    Serial.printf("[play] MP3 start %s (%u bytes)\n",
+                  GOAL_MP3_PATH, (unsigned)f.size());
+
+    PWMAudioOutput pwm;
+    auto cfg = pwm.defaultConfig();
+    cfg.channels        = 1;
+    cfg.bits_per_sample = 16;
+    cfg.sample_rate     = 22050;
+    cfg.start_pin       = PLAY_PWM_PIN;
+    pwm.begin(cfg);
+
+    EncodedAudioStream dec(&pwm, new MP3DecoderHelix());
+    dec.begin();
+
+    StreamCopy copier(dec, f);
+    uint32_t t0 = millis();
+    while (f.available() && !playerStopReq) {
+        copier.copy();
+        vTaskDelay(1);
+    }
+    Serial.printf("[play] MP3 done in %u ms (stop=%d)\n",
+                  (unsigned)(millis() - t0), (int)playerStopReq);
+    dec.end();
+    pwm.end();
+    f.close();
+    return true;
+}
+
+// Two notification slots on the player task:
+//   bit 0 → play jingle (default; fired by /play and goal pushes)
+//   bit 1 → attempt MP3 decode (silent on current buzzer; for future
+//           I2S-amp wiring testing — POST /play-mp3 to fire)
+static const uint32_t PLAY_NOTIFY_JINGLE = 0x1;
+static const uint32_t PLAY_NOTIFY_MP3    = 0x2;
 
 static void playerTask(void*) {
+    uint32_t bits = 0;
     while (true) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        playJingle();
+        xTaskNotifyWait(0, ULONG_MAX, &bits, portMAX_DELAY);
+        if (bits & PLAY_NOTIFY_MP3) {
+            if (!playGoalMP3()) playJingle();
+        } else {
+            playJingle();
+        }
         playerStopReq = false;
         playerActive  = false;
     }
@@ -876,7 +923,13 @@ static void startPlayerTaskOnce() {
 static void triggerJingle() {
     if (playerActive || !playerTaskHandle) return;
     playerActive = true;
-    xTaskNotifyGive(playerTaskHandle);
+    xTaskNotify(playerTaskHandle, PLAY_NOTIFY_JINGLE, eSetBits);
+}
+
+static void triggerMP3() {
+    if (playerActive || !playerTaskHandle) return;
+    playerActive = true;
+    xTaskNotify(playerTaskHandle, PLAY_NOTIFY_MP3, eSetBits);
 }
 
 static esp_err_t handle_play(httpd_req_t* req) {
@@ -885,6 +938,14 @@ static esp_err_t handle_play(httpd_req_t* req) {
     }
     triggerJingle();
     return send_json(req, 200, "{\"ok\":true}");
+}
+
+static esp_err_t handle_play_mp3(httpd_req_t* req) {
+    if (playerActive) {
+        return send_json(req, 200, "{\"ok\":true,\"already\":true}");
+    }
+    triggerMP3();
+    return send_json(req, 200, "{\"ok\":true,\"mode\":\"mp3-attempt\"}");
 }
 
 static esp_err_t handle_stop(httpd_req_t* req) {
@@ -1084,6 +1145,7 @@ static void startWebServer() {
         { "/test-sound",         handle_test_sound    },
         { "/sd-ls",              handle_sd_ls         },
         { "/play",               handle_play          },
+        { "/play-mp3",           handle_play_mp3      },
         { "/stop",               handle_stop          },
     };
     for (auto& r : routes) {
